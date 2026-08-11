@@ -1,0 +1,74 @@
+# Model provider and profile configuration.
+#
+# HARDWARE BUDGET (measured on the target machine):
+#   GPU: RTX 2060, 6144 MiB total / ~5955 MiB free
+#   RAM: 15.77 GB total, frequently only ~4.6 GB free
+#
+# Anything that does not fit in VRAM spills to system RAM, where there is no headroom.
+# Every profile below records `estimated_vram_mb` = weights + KV cache + compute buffers
+# + CUDA context (~300 MiB), so `edith doctor` can refuse a profile that will not fit.
+
+provider: ollama
+
+ollama:
+  host: http://127.0.0.1:11434
+  timeout_seconds: 120.0
+  connect_timeout_seconds: 5.0
+  # Local-first invariant: a non-loopback host is rejected unless this is set true.
+  allow_remote: false
+
+retry:
+  max_attempts: 3
+  initial_backoff_seconds: 0.5
+  backoff_multiplier: 2.0
+  max_backoff_seconds: 8.0
+
+default_profile: default
+
+profiles:
+  # DEFAULT. qwen2.5-coder 3B instruct, Q4_K_M.
+  #   weights ~1.9 GB + KV @8k ctx ~0.30 GB + compute ~0.25 GB + CUDA ctx ~0.3 GB
+  #   = ~2.75 GB, leaving >3 GB VRAM headroom for the desktop compositor.
+  # Chosen over the 7B variant: 7B Q4_K_M totals ~5.8 GB against 5.955 GB free, which
+  # spills to RAM the moment anything else touches the GPU. 3B holds JSON-schema
+  # formatting reliably, which matters more than raw reasoning for the M0 kernel.
+  #
+  # MEASURED on the target machine (`ollama ps`): 2.4 GB resident, 100% GPU offload,
+  # 8192 context. Warm structured-generation round trip ~2.7 s end to end; the first
+  # call after a pull costs ~105 s while the weights are read from cold disk.
+  default:
+    model_name: "qwen2.5-coder:3b-instruct-q4_K_M"
+    context_length: 8192
+    temperature: 0.2
+    top_p: 0.9
+    max_output_tokens: 2048
+    # Deterministic by default: reproducible runs are worth more than sampling variety.
+    seed: 7
+    supports_tools: false
+    keep_alive: "5m"
+    estimated_vram_mb: 2816
+
+  # Low-latency profile for classification/routing where quality matters less.
+  fast:
+    model_name: "qwen2.5-coder:1.5b-instruct-q4_K_M"
+    context_length: 4096
+    temperature: 0.1
+    top_p: 0.9
+    max_output_tokens: 1024
+    seed: 7
+    supports_tools: false
+    keep_alive: "5m"
+    estimated_vram_mb: 1536
+
+  # OPT-IN ONLY. Does not fit alongside a running desktop; `edith doctor --profile large`
+  # will report insufficient VRAM. Kept so the tradeoff is explicit rather than forgotten.
+  large:
+    model_name: "qwen2.5-coder:7b-instruct-q4_K_M"
+    context_length: 8192
+    temperature: 0.2
+    top_p: 0.9
+    max_output_tokens: 2048
+    seed: 7
+    supports_tools: true
+    keep_alive: "5m"
+    estimated_vram_mb: 5800

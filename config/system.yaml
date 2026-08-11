@@ -1,0 +1,20 @@
+# Top-level system configuration.
+project_name: edith
+
+# Directory for persisted state, logs, and future project databases.
+state_dir: .edith
+
+logging:
+  level: INFO
+  # "console" for humans, "json" for machine-readable ingestion.
+  format: console
+  file_enabled: true
+  file_path: .edith/logs/edith.jsonl
+
+resources:
+  # HARD CONSTRAINT: RTX 2060 6 GB. One heavy inference at a time.
+  # Raising this above 1 will cause VRAM exhaustion and CPU spill-over.
+  max_concurrent_inferences: 1
+  min_free_vram_mb: 2048
+  min_free_ram_mb: 2048
+  min_free_disk_mb: 10240

@@ -1,0 +1,18 @@
+# Agent-layer tuning.
+#
+# Agent *implementations* are registered in code (src/edith/agents/). This file only
+# adjusts their runtime settings. An entry here for an unregistered agent is inert.
+
+defaults:
+  model_profile: default
+  # Bounded retries: an autonomous loop must never spin forever (CLAUDE.md invariant 11).
+  max_attempts: 2
+  timeout_seconds: 300.0
+
+overrides:
+  # The kernel self-test agent must fail fast and loudly rather than retrying: a flaky
+  # self-test that eventually passes tells you nothing about the kernel.
+  echo:
+    model_profile: default
+    max_attempts: 1
+    timeout_seconds: 60.0
