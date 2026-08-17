@@ -1,4 +1,4 @@
-﻿"""Agent contract, lifecycle, and registry."""
+"""Agent contract, lifecycle, and registry."""
 
 from __future__ import annotations
 
@@ -291,7 +291,9 @@ class TestEchoAgent:
         EchoAgent(provider=fake_provider).execute(
             AgentRequest(payload={"statement": "UNIQUE_MARKER_TEXT"})
         )
-        prompt = fake_provider.calls[0]["messages"][-1][1]
+        # Checked across the whole conversation rather than one message: structured
+        # generation appends a schema instruction, so the user turn is not necessarily last.
+        prompt = "\n".join(content for _role, content in fake_provider.calls[0]["messages"])
         assert "UNIQUE_MARKER_TEXT" in prompt
 
     def test_empty_statement_rejected(self, fake_provider: FakeProvider) -> None:
@@ -463,18 +465,52 @@ class TestRegistry:
 
 
 class TestDefaultRegistry:
-    def test_ships_the_echo_agent(self, config: EdithConfig, model_params: ModelParams) -> None:
+    def test_ships_the_current_milestone_agents(
+        self, config: EdithConfig, model_params: ModelParams
+    ) -> None:
+        """The echo canary from M0, the M2 loop, the M3 researcher, and the M4 product team."""
         registry = build_default_registry(
             config, provider_factory=lambda c, p: FakeProvider(model_params)
         )
-        assert registry.names() == ("echo",)
+        assert set(registry.names()) == {
+            "echo",
+            "planner",
+            "coder",
+            "critic",
+            "debugger",
+            "researcher",
+            "product_manager",
+            "ux_designer",
+            "architect",
+        }
 
     def test_scope_is_the_milestone(
         self, config: EdithConfig, model_params: ModelParams
     ) -> None:
-        """M0 must not ship half-built future agents (STEP 7)."""
+        """Agents belonging to later milestones must not be half-shipped."""
         registry = build_default_registry(
             config, provider_factory=lambda c, p: FakeProvider(model_params)
         )
-        for future in ("planner", "coder", "critic", "memory", "context", "debugger"):
+        for future in (
+            "memory",
+            "context",
+            "security",
+            "performance",
+            "frontend",
+            "backend",
+            "database",
+            "devops",
+            "documentation",
+        ):
             assert future not in registry
+
+    def test_every_registered_agent_declares_its_permissions(
+        self, config: EdithConfig, model_params: ModelParams
+    ) -> None:
+        """`edith agents` is the single place an operator sees what each agent may do."""
+        registry = build_default_registry(
+            config, provider_factory=lambda c, p: FakeProvider(model_params)
+        )
+        for identity in registry.identities():
+            assert identity.description
+            assert identity.permissions is not None

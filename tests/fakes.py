@@ -1,4 +1,4 @@
-﻿"""Test doubles for the layers above the model seam.
+"""Test doubles for the layers above the model seam.
 
 That a :class:`FakeProvider` can stand in for :class:`OllamaProvider` with no other change
 is the practical proof that the provider abstraction holds.

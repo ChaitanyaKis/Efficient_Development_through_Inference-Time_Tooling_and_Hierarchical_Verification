@@ -34,6 +34,7 @@ from edith.schemas.agent import (
     AgentResponse,
     AgentStatus,
 )
+from edith.tools.gateway import ToolGateway
 
 logger = get_logger(__name__)
 
@@ -61,14 +62,18 @@ class Agent(ABC):
         self,
         provider: ModelProvider | None = None,
         settings: AgentDefaults | None = None,
+        tools: ToolGateway | None = None,
     ) -> None:
         """
         Args:
             provider: Model provider, injected. ``None`` for agents that need no inference
                 (and for tests), in which case :meth:`require_provider` raises if used.
             settings: Effective per-agent settings from ``agents.yaml``.
+            tools: Tool gateway already bound to this agent's permissions. ``None`` for
+                agents that touch nothing outside themselves.
         """
         self._provider = provider
+        self._tools = tools
         self.settings = settings or AgentDefaults()
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -98,6 +103,24 @@ class Agent(ABC):
                 category=FailureCategory.CONFIGURATION_ERROR,
             )
         return self._provider
+
+    @property
+    def tools(self) -> ToolGateway | None:
+        """The injected tool gateway, if any."""
+        return self._tools
+
+    def require_tools(self) -> ToolGateway:
+        """Return the tool gateway, raising a classified error when none was injected.
+
+        The gateway is already scoped to this agent's permissions, so an agent cannot widen
+        its own access by reaching for tools directly.
+        """
+        if self._tools is None:
+            raise AgentExecutionError(
+                f"agent {self.name!r} requires the tool gateway but none was injected",
+                category=FailureCategory.CONFIGURATION_ERROR,
+            )
+        return self._tools
 
     # -- Subclass surface ----------------------------------------------------------
 

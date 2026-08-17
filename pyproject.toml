@@ -40,6 +40,7 @@ pythonpath = ["src"]
 addopts = "-q --strict-markers"
 markers = [
     "integration: requires a live Ollama server and a pulled model",
+    "benchmark: runs the full autonomous loop against the live model (slow)",
 ]
 
 [tool.ruff]
@@ -56,7 +57,17 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 # Asserts are the point of a test; subprocess/self-import checks do not apply there.
-"tests/**" = ["S101", "S603", "PLC0415"]
+# Asserts are the point of a test; invoking `git`/`cmd` by name to arrange fixture state
+# is intentional, and local imports keep test helpers close to their use.
+"tests/**" = ["S101", "S603", "S607", "PLC0415"]
+# Fixtures imported from another test module are legitimately "redefined" by every test
+# that requests them, and scenario classes are named after the requirement labels they cover.
+"tests/test_hardening_suite.py" = ["S101", "S603", "S607", "PLC0415", "F811", "N801"]
+"tests/test_memory_integration.py" = ["S101", "S603", "S607", "PLC0415", "F811", "E402"]
+"tests/test_memory_strategy.py" = ["S101", "S603", "S607", "PLC0415", "F811", "E402"]
+"tests/test_memory_governor_integration.py" = [
+    "S101", "S603", "S607", "PLC0415", "F811", "E402", "SLF001",
+]
 
 [tool.mypy]
 python_version = "3.13"

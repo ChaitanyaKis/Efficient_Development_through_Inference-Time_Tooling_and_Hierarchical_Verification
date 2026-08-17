@@ -15,9 +15,11 @@ from enum import StrEnum
 from pathlib import Path
 
 from edith.config.schema import EdithConfig
+from edith.errors import EdithError
 from edith.models.base import ModelProvider
 from edith.models.registry import available_providers, build_provider
 from edith.observability.logging import get_logger
+from edith.schemas.model import GenerationOptions, Message, Role, StructuredMode
 from edith.system.resources import ResourceSnapshot, fits_in_vram, snapshot
 
 logger = get_logger(__name__)
@@ -262,6 +264,71 @@ def check_provider_health(config: EdithConfig, profile: str | None) -> CheckResu
     return CheckResult("model_provider", status, health.detail, health.remediation)
 
 
+def check_structured_output(config: EdithConfig, profile: str | None) -> CheckResult:
+    """Report what guarantee structured generation actually carries.
+
+    Probed with a real request rather than assumed. M2 ran for an entire milestone believing
+    decoding was schema-constrained while the runtime was silently rejecting every schema;
+    an operator must be able to see which mode is genuinely in force.
+    """
+    from pydantic import BaseModel  # noqa: PLC0415 - probe-local
+
+    # Deliberately shaped like a real agent schema -- a nested model inside a list, which
+    # pydantic emits as `$defs` plus `$ref`. A trivial flat probe would report "native" on a
+    # runtime that in fact rejects every schema the agents actually use, which is a more
+    # misleading answer than not checking at all.
+    class _ProbeItem(BaseModel):
+        name: str
+        count: int
+
+    class _Probe(BaseModel):
+        ok: bool
+        items: list[_ProbeItem] = []
+
+    provider: ModelProvider | None = None
+    try:
+        provider = build_provider(config, profile)
+        provider.structured_generate(
+            [Message(role=Role.USER, content='Reply with {"ok": true}')],
+            _Probe,
+            GenerationOptions(max_output_tokens=32, temperature=0.0),
+            max_repair_attempts=1,
+        )
+        mode = provider.structured_mode()
+    except EdithError as exc:
+        return CheckResult(
+            "structured_output",
+            CheckStatus.WARN,
+            f"could not be determined: {exc.message[:120]}",
+            "Structured generation falls back to local validation only.",
+        )
+    except Exception as exc:  # noqa: BLE001 - a diagnostic must never crash
+        return CheckResult(
+            "structured_output", CheckStatus.WARN, f"{type(exc).__name__}: {exc}"
+        )
+    finally:
+        if provider is not None:
+            provider.close()
+
+    if mode is StructuredMode.NATIVE:
+        return CheckResult(
+            "structured_output", CheckStatus.OK, "native (the runtime enforces the schema)"
+        )
+    if mode is StructuredMode.JSON_MODE:
+        return CheckResult(
+            "structured_output",
+            CheckStatus.WARN,
+            "json_mode (valid JSON guaranteed, schema is NOT enforced by the runtime)",
+            "Output is validated locally with bounded repair, so results stay correct but "
+            "cost more retries. Usually means the runtime rejected the JSON Schema.",
+        )
+    return CheckResult(
+        "structured_output",
+        CheckStatus.WARN,
+        f"{mode} (no runtime guarantee; correctness rests on local validation)",
+    )
+
+
 def check_config_dir(config: EdithConfig) -> CheckResult:
     """Verify the configuration directory that was actually loaded."""
     if config.config_dir is None:
@@ -344,4 +411,5 @@ def run_doctor(
     ]
     if include_provider:
         results.append(check_provider_health(config, profile))
+        results.append(check_structured_output(config, profile))
     return DoctorReport(results=results, resources=snap)

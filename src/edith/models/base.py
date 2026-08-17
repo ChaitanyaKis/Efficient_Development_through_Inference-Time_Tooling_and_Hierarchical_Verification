@@ -30,6 +30,7 @@ from edith.schemas.model import (
     Message,
     ProviderHealth,
     Role,
+    StructuredMode,
 )
 
 T = TypeVar("T", bound=BaseModel)
@@ -42,8 +43,44 @@ _FENCE_RE = re.compile(r"```(?:json|JSON)?\s*(.*?)```", re.DOTALL)
 _REPAIR_INSTRUCTION = (
     "Your previous response was not valid against the required JSON schema.\n"
     "Error: {error}\n"
+    "{envelope}"
     "Respond again with ONLY the corrected JSON object. No prose, no code fences."
 )
+
+
+def render_envelope_hint(schema: type[BaseModel]) -> str:
+    """Describe a schema's required top-level shape, for a repair prompt.
+
+    A small model that gets the *shape* wrong -- hoisting a nested key to the top level,
+    say ``{"replace_file": {...}}`` where ``{"edits": [{"mode": "replace_file", ...}]}`` was
+    required -- is not helped by being told its output was invalid. It needs to be told what
+    the outer object looks like.
+
+    Derived from the schema rather than hand-written per model, so a new structured output
+    gets the same help without anyone remembering to add it. Nothing here relaxes
+    validation: the response is still validated against the strict schema afterwards, and a
+    reply that ignores this hint fails exactly as it did before.
+    """
+    document = schema.model_json_schema()
+    properties = document.get("properties", {})
+    if not properties:
+        return ""
+
+    required = set(document.get("required", []))
+    keys = sorted(properties, key=lambda name: (name not in required, name))
+    described = ", ".join(
+        f'"{name}"{"" if name in required else " (optional)"}' for name in keys
+    )
+    mandatory = sorted(required)
+    lines = [
+        f"The JSON object's top-level keys must be exactly: {described}.",
+    ]
+    if mandatory:
+        lines.append(
+            f"Do not put any other key at the top level. {', '.join(mandatory)} "
+            f"{'is' if len(mandatory) == 1 else 'are'} required."
+        )
+    return "\n".join(lines) + "\n"
 
 
 def extract_json_object(text: str) -> str:
@@ -101,6 +138,8 @@ class ModelProvider(ABC):
 
     def __init__(self, params: ModelParams) -> None:
         self.params = params
+        #: Updated by a provider when it learns what the runtime actually enforces.
+        self._structured_mode: StructuredMode = StructuredMode.UNKNOWN
 
     # -- Provider-specific surface -------------------------------------------------
 
@@ -150,6 +189,15 @@ class ModelProvider(ABC):
         """Whether the configured model supports native tool calling."""
         return self.params.supports_tools
 
+    def structured_mode(self) -> StructuredMode:
+        """The guarantee structured generation actually carries on this provider.
+
+        Providers that discover at runtime that their schema was rejected must update this,
+        so an agent is never told decoding is constrained when it is not. The base class
+        reports the conservative answer until something proves otherwise.
+        """
+        return self._structured_mode
+
     def generate(
         self, messages: Sequence[Message], options: GenerationOptions | None = None
     ) -> GenerationResult:
@@ -188,7 +236,13 @@ class ModelProvider(ABC):
             raise ValueError("max_repair_attempts must be >= 0")
 
         json_schema = schema.model_json_schema()
-        conversation: list[Message] = list(messages)
+        # State the schema in the prompt as well as requesting constrained decoding. A
+        # runtime may decline to enforce a schema it cannot compile, and a small model
+        # produces far better-shaped output when it has seen the target explicitly.
+        conversation: list[Message] = [
+            *messages,
+            Message(role=Role.SYSTEM, content=render_schema_instruction(schema)),
+        ]
         last_error = "unknown"
         started = time.monotonic()
 
@@ -226,7 +280,10 @@ class ModelProvider(ABC):
                     Message(role=Role.ASSISTANT, content=result.text),
                     Message(
                         role=Role.USER,
-                        content=_REPAIR_INSTRUCTION.format(error=last_error),
+                        content=_REPAIR_INSTRUCTION.format(
+                            error=last_error,
+                            envelope=render_envelope_hint(schema),
+                        ),
                     ),
                 ]
 

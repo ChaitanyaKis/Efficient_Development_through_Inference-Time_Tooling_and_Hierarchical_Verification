@@ -27,6 +27,7 @@ from edith.schemas.model import (
     HealthState,
     Message,
     ProviderHealth,
+    StructuredMode,
     TokenUsage,
 )
 
@@ -46,9 +47,61 @@ _PULL_HINT = "Model {model!r} is not present. Run: ollama pull {model}"
 _NS_PER_S = 1_000_000_000
 
 
+#: Depth guard for schema inlining; also breaks self-referential schemas.
+_MAX_SCHEMA_DEPTH = 12
+
+
 def normalize_model_name(name: str) -> str:
     """Normalize an Ollama model reference so ``foo`` and ``foo:latest`` compare equal."""
     return name if ":" in name else f"{name}:latest"
+
+
+def inline_schema_refs(schema: dict[str, Any]) -> dict[str, Any]:
+    """Return a JSON Schema with ``$ref``/``$defs`` resolved inline.
+
+    Pydantic emits nested models as ``$defs`` plus ``$ref`` pointers. Ollama compiles the
+    schema into a sampling grammar and does not follow those pointers -- it rejects the
+    request with ``failed to parse grammar``. Inlining keeps constrained decoding working
+    for any schema with a nested model, which is most of the interesting ones.
+    """
+    definitions = schema.get("$defs", {})
+
+    def resolve(node: Any, depth: int) -> Any:
+        if depth > _MAX_SCHEMA_DEPTH:
+            # A recursive schema cannot be fully inlined; leave the remainder as a
+            # permissive object rather than looping forever.
+            return {"type": "object"}
+        if isinstance(node, dict):
+            reference = node.get("$ref")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                target = definitions.get(reference.split("/")[-1])
+                if target is None:
+                    return {"type": "object"}
+                merged = {**resolve(target, depth + 1)}
+                # Preserve sibling keys such as "description" that sat beside the $ref.
+                merged.update(
+                    {k: resolve(v, depth + 1) for k, v in node.items() if k != "$ref"}
+                )
+                return merged
+            return {
+                key: resolve(value, depth + 1)
+                for key, value in node.items()
+                if key != "$defs"
+            }
+        if isinstance(node, list):
+            return [resolve(item, depth + 1) for item in node]
+        return node
+
+    resolved = resolve(schema, 0)
+    return resolved if isinstance(resolved, dict) else schema
+
+
+def _is_grammar_rejection(response: httpx.Response) -> bool:
+    """Whether a 400 indicates the runtime could not compile the schema grammar."""
+    if response.status_code != 400:
+        return False
+    body = response.text.lower()
+    return "grammar" in body or "sampler" in body
 
 
 class OllamaProvider(ModelProvider):
@@ -76,6 +129,7 @@ class OllamaProvider(ModelProvider):
         """
         super().__init__(params)
         self.config = config
+        self._structured_detail = ""
         self._owns_client = client is None
         self._client = client or httpx.Client(
             base_url=config.host,
@@ -131,7 +185,8 @@ class OllamaProvider(ModelProvider):
         }
         if json_schema is not None:
             # Ollama constrains decoding to a JSON Schema when `format` is a schema object.
-            payload["format"] = json_schema
+            # Refs must be inlined first: its grammar compiler does not follow them.
+            payload["format"] = inline_schema_refs(json_schema)
         return payload
 
     # -- Error translation ---------------------------------------------------------
@@ -180,6 +235,30 @@ class OllamaProvider(ModelProvider):
             response = self._client.post("/api/chat", json=payload)
         except httpx.HTTPError as exc:
             raise self._wrap_transport_error(exc) from exc
+
+        if json_schema is not None and _is_grammar_rejection(response):
+            # The runtime could not compile this schema into a sampling grammar. Degrade to
+            # generic JSON mode rather than failing the call: the caller validates the
+            # result against the schema anyway, so correctness does not depend on the
+            # runtime enforcing it -- only reliability does.
+            logger.warning(
+                "ollama.grammar_unsupported",
+                model=self.params.model_name,
+                fallback="format=json",
+            )
+            # Record what is actually true now, so diagnostics and agents stop believing
+            # the schema is being enforced during decoding.
+            self._structured_mode = StructuredMode.JSON_MODE
+            self._structured_detail = (
+                "the runtime rejected this JSON Schema as a sampling grammar; output is "
+                "constrained to valid JSON only and validated locally"
+            )
+            payload["format"] = "json"
+            try:
+                response = self._client.post("/api/chat", json=payload)
+            except httpx.HTTPError as exc:
+                raise self._wrap_transport_error(exc) from exc
+
         self._raise_for_status(response)
 
         try:
@@ -190,6 +269,10 @@ class OllamaProvider(ModelProvider):
                 retryable=True,
                 details={"model": self.params.model_name},
             ) from exc
+
+        if json_schema is not None and self._structured_mode is StructuredMode.UNKNOWN:
+            self._structured_mode = StructuredMode.NATIVE
+            self._structured_detail = "the runtime compiled the schema into a grammar"
 
         text = (data.get("message") or {}).get("content", "")
         duration = time.monotonic() - started
@@ -328,6 +411,9 @@ class OllamaProvider(ModelProvider):
             configured_model=configured,
             configured_model_present=present,
             latency_ms=round(latency_ms, 2),
+            structured_mode=self._structured_mode,
+            structured_detail=self._structured_detail
+            or "not yet exercised; the first structured call determines this",
         )
 
     def close(self) -> None:

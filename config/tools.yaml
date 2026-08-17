@@ -1,0 +1,116 @@
+# Tool Gateway configuration.
+#
+# Agents never receive unrestricted filesystem or shell access. Every operation goes
+# through the gateway, which checks the calling agent's declared permissions before the
+# tool runs. The settings here are the limits that apply to *everyone*; per-agent scope
+# lives on each agent's identity (see `edith agents`).
+
+# Workspace root that tools operate on. Relative values resolve against the process
+# working directory. Every agent-supplied path is confined to this tree after being
+# normalized and symlink-resolved.
+workspace_root: .
+
+# Default wall-clock budget for one tool call.
+default_timeout_seconds: 60.0
+
+paths:
+  # Denied to every agent regardless of granted write scope. This is a floor, not a
+  # default: an agent cannot be configured around it.
+  protected_patterns:
+    - ".git/**"
+    - ".git"
+    - "**/.git"
+    - "**/.git/**"
+    - ".env"
+    - ".env.*"
+    - "**/.env"
+    - "**/.env.*"
+    - "secrets/**"
+    - "credentials/**"
+    - "**/id_rsa"
+    - "**/id_ed25519"
+    - "*.pem"
+    - "**/*.pem"
+    - "*.key"
+    - "**/*.key"
+    - "*.pfx"
+    - "**/*.pfx"
+    - ".ssh/**"
+    - ".aws/**"
+    - "**/.npmrc"
+    - "**/.pypirc"
+
+  # 2 MiB. Large enough for any source file; small enough that a stray read cannot
+  # exhaust RAM on a 16 GB machine or flood a model's context window.
+  max_file_bytes: 2097152
+  max_search_results: 200
+
+  # A symlink inside an agent-managed tree is more likely an escape attempt than a
+  # legitimate need. Paths are refused even when the link resolves back inside the
+  # workspace.
+  allow_symlinks: false
+
+shell:
+  # shell.run takes an argv list and never invokes a system shell, so there is no
+  # metacharacter injection surface. This list constrains *which program* may run.
+  allowed_executables:
+    - python
+    - python3
+    - pytest
+    - ruff
+    - mypy
+    - git
+    - node
+    - npm
+    - npx
+    - pnpm
+    - yarn
+    - cargo
+    - go
+    - dotnet
+    - java
+    - mvn
+    - gradle
+    - make
+
+  # The child environment is built from scratch from this list (plus PATH). Anything
+  # not named here - API keys, cloud credentials, tokens - cannot reach a child process.
+  env_passthrough:
+    - SYSTEMROOT
+    - WINDIR
+    - COMSPEC
+    - PATHEXT
+    - NUMBER_OF_PROCESSORS
+    - PROCESSOR_ARCHITECTURE
+    - TEMP
+    - TMP
+    - TMPDIR
+    - HOME
+    - LANG
+    - LC_ALL
+
+  timeout_seconds: 120.0
+  max_output_bytes: 131072
+
+git:
+  timeout_seconds: 60.0
+  max_output_bytes: 262144
+  max_log_entries: 100
+
+  # Agent branches must carry this prefix, keeping agent work off shared history.
+  branch_prefixes:
+    - "agent/"
+
+  # Never deletable by an agent.
+  protected_branches:
+    - main
+    - master
+    - develop
+    - release
+
+  # Worktrees live inside the workspace so the path policy still applies, and under
+  # .edith/ so they are already gitignored.
+  worktree_dir: .edith/worktrees
+
+  committer_name: Edith Agent
+  committer_email: edith-agent@localhost

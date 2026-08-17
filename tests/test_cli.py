@@ -1,4 +1,4 @@
-﻿"""CLI behaviour and exit codes.
+"""CLI behaviour and exit codes.
 
 Exit codes matter: these commands are meant to be usable as gates in scripts and CI.
 """
@@ -51,8 +51,12 @@ class TestHelp:
         assert "Usage" in runner.invoke(app, []).output
 
     def test_future_milestone_commands_are_absent(self) -> None:
-        """A command that only prints 'not implemented' is worse than no command."""
-        for absent in ("project", "memory", "task", "benchmark"):
+        """A command that only prints 'not implemented' is worse than no command.
+
+        ``memory`` and ``benchmark`` were added once the milestones behind them existed;
+        ``project`` and ``task`` remain absent because nothing yet stands behind them.
+        """
+        for absent in ("project", "task"):
             assert runner.invoke(app, [absent]).exit_code != EXIT_OK
 
 
@@ -91,7 +95,7 @@ class TestAgentsCommand:
     def test_json_output(self, cli_config_dir: Path) -> None:
         result = runner.invoke(app, ["agents", "--config-dir", str(cli_config_dir), "--json"])
         payload = json.loads(result.stdout)
-        assert payload[0]["name"] == "echo"
+        assert {entry["name"] for entry in payload} >= {"echo", "coder", "critic"}
 
 
 class TestDoctorCommand:
@@ -274,6 +278,159 @@ class TestEnvironmentOverridesReachTheCli:
         monkeypatch.setenv("EDITH__SYSTEM__PROJECT_NAME", "overridden")
         result = runner.invoke(app, ["config", "--config-dir", str(config_dir)])
         assert "overridden" in result.stdout
+
+
+class TestToolsCommand:
+    def test_lists_every_m1_tool(self, cli_config_dir: Path) -> None:
+        result = runner.invoke(app, ["tools", "--config-dir", str(cli_config_dir)])
+        assert result.exit_code == EXIT_OK
+        for tool in ("filesystem.read", "shell.run", "git.commit", "git.worktree"):
+            assert tool in result.stdout
+
+    def test_shows_risk_surface(self, cli_config_dir: Path) -> None:
+        result = runner.invoke(app, ["tools", "--config-dir", str(cli_config_dir)])
+        assert "read+write" in result.stdout
+
+    def test_json_output(self, cli_config_dir: Path) -> None:
+        result = runner.invoke(app, ["tools", "--config-dir", str(cli_config_dir), "--json"])
+        payload = json.loads(result.stdout)
+        assert {entry["name"] for entry in payload} >= {"filesystem.read", "shell.run"}
+
+
+class TestToolCommand:
+    def test_runs_a_tool(self, cli_config_dir: Path, tmp_path: Path) -> None:
+        target = tmp_path / "ws"
+        target.mkdir()
+        (target / "note.txt").write_text("hello from disk\n", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "tool", "filesystem.read",
+                "--config-dir", str(cli_config_dir),
+                "--workspace", str(target),
+                "--args", '{"path": "note.txt"}',
+            ],
+        )
+        assert result.exit_code == EXIT_OK
+        assert "hello from disk" in json.loads(result.stdout)["output"]["content"]
+
+    def test_policy_still_applies_to_the_operator(
+        self, cli_config_dir: Path, tmp_path: Path
+    ) -> None:
+        """Unrestricted permissions do not disable the path policy."""
+        target = tmp_path / "ws"
+        target.mkdir()
+        (target / ".env").write_text("SECRET=x\n", encoding="utf-8")
+        result = runner.invoke(
+            app,
+            [
+                "tool", "filesystem.read",
+                "--config-dir", str(cli_config_dir),
+                "--workspace", str(target),
+                "--args", '{"path": ".env"}',
+            ],
+        )
+        assert result.exit_code == EXIT_FAILURE
+        assert json.loads(result.stdout)["failure_category"] == "SECURITY_FAILURE"
+
+    def test_failure_exits_nonzero(self, cli_config_dir: Path, tmp_path: Path) -> None:
+        target = tmp_path / "ws"
+        target.mkdir()
+        result = runner.invoke(
+            app,
+            [
+                "tool", "filesystem.read",
+                "--config-dir", str(cli_config_dir),
+                "--workspace", str(target),
+                "--args", '{"path": "absent.txt"}',
+            ],
+        )
+        assert result.exit_code == EXIT_FAILURE
+
+    def test_malformed_args_rejected(self, cli_config_dir: Path, tmp_path: Path) -> None:
+        target = tmp_path / "ws"
+        target.mkdir()
+        result = runner.invoke(
+            app,
+            [
+                "tool", "filesystem.read",
+                "--config-dir", str(cli_config_dir),
+                "--workspace", str(target),
+                "--args", "{not json}",
+            ],
+        )
+        assert result.exit_code == EXIT_CONFIG_ERROR
+
+    def test_missing_workspace_reported(self, cli_config_dir: Path, tmp_path: Path) -> None:
+        result = runner.invoke(
+            app,
+            [
+                "tool", "filesystem.read",
+                "--config-dir", str(cli_config_dir),
+                "--workspace", str(tmp_path / "absent"),
+                "--args", '{"path": "x"}',
+            ],
+        )
+        assert result.exit_code == EXIT_CONFIG_ERROR
+
+
+class TestEnvironmentCommand:
+    """``edith environment`` inspects and generates. It never installs."""
+
+    def project(self, root: Path) -> Path:
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "pyproject.toml").write_text(
+            '[project]\nname = "demo"\ndependencies = ["requests>=2.31"]\n', encoding="utf-8"
+        )
+        (root / "app.py").write_text("import requests\n", encoding="utf-8")
+        return root
+
+    def test_inspection_reports_dependencies_as_json(
+        self, cli_config_dir: Path, tmp_path: Path
+    ) -> None:
+        project = self.project(tmp_path / "demo")
+        result = runner.invoke(
+            app,
+            [
+                "environment",
+                "--config-dir", str(cli_config_dir),
+                "--project", str(project),
+                "--json",
+            ],
+        )
+        payload = json.loads(result.stdout)
+        assert [d["name"] for d in payload["spec"]["dependencies"]] == ["requests"]
+        assert payload["written"] == []
+
+    def test_write_generates_artifacts_and_installs_nothing(
+        self, cli_config_dir: Path, tmp_path: Path
+    ) -> None:
+        project = self.project(tmp_path / "demo")
+        result = runner.invoke(
+            app,
+            [
+                "environment",
+                "--config-dir", str(cli_config_dir),
+                "--project", str(project),
+                "--write",
+                "--json",
+            ],
+        )
+        assert result.exit_code == EXIT_OK
+        payload = json.loads(result.stdout)
+        assert sorted(payload["written"]) == [
+            "requirements.txt",
+            "scripts/install.bat",
+            "scripts/install.ps1",
+            "scripts/install.sh",
+        ]
+        assert not payload["denied"]
+
+        # Generated, not executed: no environment was created by inspecting the project.
+        assert not (project / ".venv").exists()
+        script = (project / "scripts" / "install.bat").read_text(encoding="utf-8")
+        assert "venv" in script
+        assert "--user" not in script
 
 
 class TestNoCloudDependencies:

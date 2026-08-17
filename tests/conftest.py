@@ -1,4 +1,4 @@
-﻿"""Shared fixtures.
+"""Shared fixtures.
 
 Unit tests must never touch a real model runtime, the real config directory, or the user's
 home directory. Everything here is hermetic; live-model coverage lives in

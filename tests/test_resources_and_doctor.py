@@ -1,4 +1,4 @@
-﻿"""Resource probing, VRAM fit checks, and the doctor's diagnostics."""
+"""Resource probing, VRAM fit checks, and the doctor's diagnostics."""
 
 from __future__ import annotations
 

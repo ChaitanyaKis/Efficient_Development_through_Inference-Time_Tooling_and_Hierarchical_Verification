@@ -30,6 +30,8 @@ CONFIG_FILES: dict[str, str] = {
     "system.yaml": "system",
     "models.yaml": "models",
     "agents.yaml": "agents",
+    "tools.yaml": "tools",
+    "orchestration.yaml": "orchestration",
 }
 
 

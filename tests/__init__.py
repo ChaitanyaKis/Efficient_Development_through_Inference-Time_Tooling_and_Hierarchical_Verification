@@ -1,1 +1,1 @@
-﻿"""Edith test suite."""
+"""Edith test suite."""

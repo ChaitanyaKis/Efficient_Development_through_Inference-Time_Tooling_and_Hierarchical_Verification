@@ -1,4 +1,4 @@
-﻿"""Domain schema validation."""
+"""Domain schema validation."""
 
 from __future__ import annotations
 

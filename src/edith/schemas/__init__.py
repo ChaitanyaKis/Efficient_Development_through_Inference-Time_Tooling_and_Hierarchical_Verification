@@ -18,6 +18,7 @@ from .model import (
     Message,
     ProviderHealth,
     Role,
+    StructuredMode,
     TokenUsage,
 )
 
@@ -37,6 +38,7 @@ __all__ = [
     "ProviderHealth",
     "Role",
     "Severity",
+    "StructuredMode",
     "TaskRef",
     "Timestamped",
     "TokenUsage",

@@ -1,4 +1,4 @@
-﻿"""Configuration loading, merging, precedence, and validation."""
+"""Configuration loading, merging, precedence, and validation."""
 
 from __future__ import annotations
 

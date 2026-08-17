@@ -1,0 +1,44 @@
+# The autonomous loop: workspace layout, bounds, context budget, verification commands.
+
+# Project workspaces live OUTSIDE the Edith repository. An autonomous task must not be
+# able to casually modify the kernel that is running it. Relative paths resolve against
+# the directory containing config/, so this points at C:\Projects\Edith_Workspaces by
+# default. The WorkspaceManager additionally refuses any workspace that is, contains, or
+# lives inside the Edith repo - that rule is not configurable.
+workspaces_root: ../Edith_Workspaces
+
+# Bounded loops (CLAUDE.md invariant 11). Attempts per task, debugger invocations per
+# task, and a hard ceiling on total agent runs as a backstop against any loop the
+# per-task budgets fail to bound.
+max_task_attempts: 3
+max_repair_attempts: 2
+max_total_agent_runs: 40
+
+# Each execution works on its own branch so the main line is never touched directly.
+use_branch_isolation: true
+branch_prefix: agent/exec
+
+context:
+  # Sized for a 3B model with an 8192-token window. Roughly 12k characters of context
+  # leaves room for the system prompt, the task, and the model's own output. Raising
+  # these will silently truncate prompts rather than improve results.
+  max_files: 8
+  max_total_chars: 12000
+  max_file_chars: 4000
+  include_tests: true
+  include_docs: true
+
+# Verification commands are argv lists, run through the M1 shell.run allowlist. A model
+# or a plan selects a *kind* (tests/lint/typecheck/build); it can never author a command.
+default_verification_profile: python
+
+verification_profiles:
+  python:
+    tests: [python, -m, pytest, -q]
+    lint: [python, -m, ruff, check, .]
+    typecheck: [python, -m, mypy, .]
+
+  node:
+    tests: [npm, test]
+    lint: [npm, run, lint]
+    build: [npm, run, build]

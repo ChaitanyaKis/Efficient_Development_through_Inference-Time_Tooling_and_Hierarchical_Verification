@@ -1,4 +1,4 @@
-﻿"""Error classification and bounded retry behaviour."""
+"""Error classification and bounded retry behaviour."""
 
 from __future__ import annotations
 

@@ -23,6 +23,12 @@ class FailureCategory(StrEnum):
     ARCHITECTURE_FAILURE = "ARCHITECTURE_FAILURE"
     SECURITY_FAILURE = "SECURITY_FAILURE"
     ENVIRONMENT_FAILURE = "ENVIRONMENT_FAILURE"
+    #: A package the project requires is not installed. Distinct from ENVIRONMENT_FAILURE
+    #: (the toolchain is broken) and from CODE_FAILURE (the project's own code is wrong):
+    #: the code may be perfectly correct and simply unable to import what it needs.
+    DEPENDENCY_FAILURE = "DEPENDENCY_FAILURE"
+    #: The project's own code could not be imported, parsed, or executed.
+    CODE_FAILURE = "CODE_FAILURE"
     VALIDATION_FAILURE = "VALIDATION_FAILURE"
     CONFIGURATION_ERROR = "CONFIGURATION_ERROR"
     TIMEOUT = "TIMEOUT"
@@ -108,6 +114,59 @@ class StructuredOutputError(ProviderError):
 
     category = FailureCategory.VALIDATION_FAILURE
     default_retryable = True
+
+
+class ToolError(EdithError):
+    """Base class for tool-layer failures."""
+
+    category = FailureCategory.TOOL_ERROR
+
+
+class ToolNotFoundError(ToolError):
+    """No tool is registered under the requested name."""
+
+    category = FailureCategory.CONFIGURATION_ERROR
+
+
+class ToolRegistrationError(ToolError):
+    """A tool could not be registered (duplicate name, invalid definition)."""
+
+    category = FailureCategory.CONFIGURATION_ERROR
+
+
+class ToolValidationError(ToolError):
+    """Tool arguments or results failed schema validation."""
+
+    category = FailureCategory.VALIDATION_FAILURE
+
+
+class PermissionDeniedError(ToolError):
+    """The calling agent is not permitted to perform this operation.
+
+    Classified as ``SECURITY_FAILURE`` rather than ``TOOL_ERROR``: a denied operation is a
+    policy event that must be visible in audit logs and must never be quietly retried.
+    """
+
+    category = FailureCategory.SECURITY_FAILURE
+
+
+class PathPolicyError(PermissionDeniedError):
+    """A path escaped the workspace, targeted a protected file, or was otherwise unsafe."""
+
+    category = FailureCategory.SECURITY_FAILURE
+
+
+class ToolTimeoutError(ToolError):
+    """A tool exceeded its configured time budget."""
+
+    category = FailureCategory.TIMEOUT
+    default_retryable = True
+
+
+class ToolExecutionError(ToolError):
+    """The tool ran but failed (non-zero exit, missing file, unreadable content)."""
+
+    category = FailureCategory.TOOL_ERROR
 
 
 class AgentError(EdithError):

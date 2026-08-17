@@ -1,4 +1,4 @@
-﻿"""The Ollama provider: request shaping, error translation, and health detection.
+"""The Ollama provider: request shaping, error translation, and health detection.
 
 All HTTP is mocked with respx. These tests must pass on a machine with no Ollama installed.
 """

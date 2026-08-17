@@ -1,4 +1,4 @@
-﻿"""Live integration tests against a real Ollama runtime and a real model.
+"""Live integration tests against a real Ollama runtime and a real model.
 
 These are the tests that actually satisfy the M0 acceptance criterion: a local model called
 through our abstraction returns a *validated structured result*. Everything else in the

@@ -1,4 +1,4 @@
-﻿"""The provider abstraction: JSON extraction, structured generation, and bounded repair."""
+"""The provider abstraction: JSON extraction, structured generation, and bounded repair."""
 
 from __future__ import annotations
 

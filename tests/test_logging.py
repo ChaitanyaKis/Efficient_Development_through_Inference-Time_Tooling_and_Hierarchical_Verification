@@ -1,4 +1,4 @@
-﻿"""Structured logging, and the guarantee that secrets are never emitted."""
+"""Structured logging, and the guarantee that secrets are never emitted."""
 
 from __future__ import annotations
 
