@@ -38,6 +38,7 @@ from edith.quality.artifacts import (
     ReviewEvidence,
 )
 from edith.quality.scanners import scan_review, scan_security
+from edith.schemas.agent import AgentRequest
 from edith.schemas.common import Severity
 from edith.verification.runner import VerificationReport
 
@@ -263,3 +264,53 @@ def read_sources(root: Path, paths: tuple[str, ...]) -> dict[str, str]:
         except (OSError, UnicodeDecodeError):
             continue
     return sources
+
+
+def run_model_review(
+    pipeline: QualityPipeline,
+    agent: object,
+    *,
+    name: str,
+    sources: dict[str, str],
+    task: str = "",
+) -> GateResult:
+    """Run one model reviewer over the changed sources and record its findings.
+
+    Returns without calling the model at all when deterministic evidence has already blocked.
+    That is not only a cost decision: a reviewer's opinion on code that is already rejected
+    cannot change the verdict, so the call would buy nothing on a 6GB card.
+
+    A malformed or failing model response degrades to *no findings*, never to an exception and
+    never to a pass. M6.1 item 12: the model failing must be safe.
+    """
+    from edith.quality.agents import ReviewInput, ReviewOutput, to_findings  # noqa: PLC0415
+
+    if pipeline.blocked:
+        logger.info(
+            "quality.skipped",
+            gate=name,
+            reason="already blocked by deterministic evidence",
+        )
+        return pipeline._record(GateResult(name=name, ran=False))
+
+    collected: list[QualityFinding] = []
+    for path, source in sorted(sources.items()):
+        if not source.strip():
+            continue
+        try:
+            request = AgentRequest(
+                payload=ReviewInput(path=path, source=source, task=task).model_dump()
+            )
+            response = agent.execute(request)  # type: ignore[attr-defined]
+            output = ReviewOutput.model_validate(response.output)
+        except Exception as exc:  # noqa: BLE001 - a reviewer must never abort the pipeline
+            logger.warning(
+                "quality.review_failed", gate=name, path=path, error=f"{type(exc).__name__}: {exc}"
+            )
+            continue
+        collected.extend(
+            to_findings(
+                output, path=path, source=source, agent=name, task_id=pipeline.task_id
+            )
+        )
+    return pipeline.model_findings_gate(name, tuple(collected))
