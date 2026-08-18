@@ -401,6 +401,15 @@ class OrchestrationConfig(StrictModel):
     max_task_attempts: int = Field(default=3, ge=1, le=10)
     #: Debugger invocations per task.
     max_repair_attempts: int = Field(default=2, ge=0, le=5)
+    #: Whether the M6.1 model reviewers run after the deterministic quality gates.
+    #:
+    #: Off by default, and that default is a measurement rather than caution: M6.1's A/B found
+    #: model review costs roughly four seconds per file and adds nothing on code the AST
+    #: scanners already judge correctly. It catches semantic defects no scanner can see, so it
+    #: is worth having available -- but enabling it by default would slow every task for a
+    #: benefit that has not been demonstrated on real generated code. Same discipline as M3.2's
+    #: memory strategy, which is also off until evidence says otherwise.
+    model_quality_review: bool = False
     #: Ceiling on total agent invocations in one execution, a backstop against any loop
     #: the per-task budgets fail to bound.
     max_total_agent_runs: int = Field(default=40, ge=1, le=500)

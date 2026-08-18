@@ -40,6 +40,11 @@ from edith.observability.logging import get_logger
 from edith.product.architecture import ImplementationPlanDocument
 from edith.product.prd import PRDDocument
 from edith.product.ux import UXSpecDocument
+from edith.quality.artifacts import (
+    FindingOrigin,
+    QualityReport,
+    QualityVerdict,
+)
 from edith.schemas.agent import AgentPermissions, AgentRequest, TaskRef
 from edith.tools.gateway import ToolGateway
 from edith.tools.registry import ToolRegistry
@@ -162,6 +167,8 @@ class TaskExecution:
     model_calls: int = 0
     #: How many times this task was re-attempted after a rejection.
     repair_attempts: int = 0
+    #: The M6 quality report, when the quality pipeline ran.
+    quality_report: QualityReport | None = None
     duration_seconds: float = 0.0
     detail: str = ""
     failure_category: FailureCategory | None = None
@@ -734,6 +741,22 @@ class EngineeringExecutor:
                     execution.duration_seconds = time.monotonic() - started
                     return execution
 
+            quality = self._quality(task.task_id, changed, report=execution.verification, root=root)
+            execution.quality_report = quality
+            if quality is not None and not quality.verdict().merges:
+                # The adjudicator decided, not the reviewer. A model finding reaches this point
+                # as advisory evidence; only the deterministic verdict rejects the task, and
+                # only a repairable verdict re-enters the coder's budget.
+                execution.outcome = TaskOutcome.REJECTED
+                execution.detail = _render_quality(quality)
+                execution.failure_category = (
+                    FailureCategory.CODE_FAILURE
+                    if quality.verdict() is QualityVerdict.REPAIR_REQUIRED
+                    else FailureCategory.SECURITY_FAILURE
+                )
+                execution.duration_seconds = time.monotonic() - started
+                return execution
+
             execution.outcome = TaskOutcome.COMPLETED
             execution.quality = QualityState.VERIFIED
             execution.detail = f"changed {len(changed)} file(s)"
@@ -747,6 +770,101 @@ class EngineeringExecutor:
 
         execution.duration_seconds = time.monotonic() - started
         return execution
+
+    def _quality(
+        self,
+        task_id: str,
+        changed: tuple[str, ...],
+        *,
+        report: VerificationReport | None,
+        root: Path | None,
+    ) -> QualityReport | None:
+        """Run the M6 quality gates over what this task changed.
+
+        Always runs the deterministic gates; runs the model reviewers only when
+        ``orchestration.model_quality_review`` is on. The pipeline itself decides to skip the
+        model once deterministic evidence has blocked, so nothing here re-implements that.
+
+        Returns ``None`` when there is nothing to review. A quality pipeline that cannot read
+        the changed files reports nothing rather than guessing -- the verification gate has
+        already had its say, and inventing a finding here would be the opposite of the
+        evidence rule.
+        """
+        from edith.quality.pipeline import (  # noqa: PLC0415 - avoids a cycle
+            QualityPipeline,
+            read_sources,
+            run_model_review,
+        )
+
+        base = root or self.workspace.root
+        sources = read_sources(base, changed)
+        if not sources:
+            return None
+
+        pipeline = QualityPipeline(task_id=task_id)
+        pipeline.security_gate(sources)
+        pipeline.review_gate(sources)
+
+        if not self.config.orchestration.model_quality_review:
+            return pipeline.report()
+
+        from edith.quality.agents import (  # noqa: PLC0415 - optional path, model only
+            CodeReviewAgent,
+            JudgeAgent,
+            JudgeInput,
+            JudgeOutput,
+            SecurityAgent,
+            render_findings,
+        )
+
+        for agent_class, name in (
+            (SecurityAgent, "model-security"),
+            (CodeReviewAgent, "model-review"),
+        ):
+            run_model_review(
+                pipeline,
+                agent_class(provider=self._provider),
+                name=name,
+                sources=sources,
+                task=task_id,
+            )
+
+        judge_verdict = None
+        rationale = ""
+        if not pipeline.blocked:
+            try:
+                response = JudgeAgent(provider=self._provider).execute(
+                    AgentRequest(
+                        payload=JudgeInput(
+                            task=task_id,
+                            tests_passed=bool(report and report.passed),
+                            deterministic_findings=render_findings(
+                                pipeline.report().findings
+                            ),
+                            changed_files=", ".join(changed[:20]),
+                        ).model_dump()
+                    )
+                )
+                if not response.ok:
+                    # The agent envelope reports failure by returning an empty payload, which
+                    # would validate as JudgeOutput's default of FAILED and silently block
+                    # good code. An unreachable Judge contributes nothing instead.
+                    raise RuntimeError(response.error or "the judge did not answer")
+                judged = JudgeOutput.model_validate(response.output)
+                judge_verdict = judged.verdict
+                rationale = judged.rationale
+            except Exception as exc:  # noqa: BLE001 - the Judge is advisory; it may fail
+                # A Judge that cannot be reached is infrastructure, not a coder defect. It
+                # contributes nothing rather than blocking, and the deterministic gates stand.
+                logger.warning(
+                    "quality.judge_failed",
+                    task_id=task_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+
+        return pipeline.report(
+            judge_verdict=judge_verdict, judge_rationale=rationale
+        )
 
     def _check_importable(
         self, changed: tuple[str, ...], *, root: Path | None = None
@@ -853,3 +971,21 @@ def _out_of_scope(changed: tuple[str, ...], declared: tuple[str, ...]) -> tuple[
     return tuple(
         path for path in changed if path.replace("\\", "/") not in allowed
     )
+
+
+def _render_quality(report: QualityReport) -> str:
+    """Repair evidence from a quality report.
+
+    Blocking findings only, and the deterministic ones first: an agent given a model's stylistic
+    opinion alongside a real defect tends to address the opinion. M2.1 established that repair
+    works when it is shown the actual failure.
+    """
+    ordered = sorted(
+        report.blocking, key=lambda item: item.origin is not FindingOrigin.DETERMINISTIC
+    )
+    lines = [
+        f"[{item.severity.value}] {item.category}: {item.summary}"
+        + (f"\n    {item.evidence[0].detail[:200]}" if item.evidence else "")
+        for item in ordered[:5]
+    ]
+    return "quality review rejected the change:\n" + "\n".join(lines)
