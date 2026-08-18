@@ -210,3 +210,109 @@ class TestModelFailureIsNotACoderDefect:
             judge_verdict=QualityVerdict.PASS,
         )
         assert report.verdict() is QualityVerdict.BLOCKED
+
+
+class TestAVerifiedTaskReachesMain:
+    """M6.2's real finding: merge moved the workspace's *state* and nothing else.
+
+    Every task reported COMPLETED and merged while main received no files, so six of six tasks
+    "succeeded" and none passed an independently written acceptance test. The state machine was
+    correct and the tree was empty, which is why no existing test caught it -- they all asserted
+    on the ledger rather than on the filesystem.
+    """
+
+    def test_merging_copies_the_changed_files_into_the_main_tree(
+        self, tmp_path: Path
+    ) -> None:
+        from edith.engineering.isolation import (
+            TaskWorkspace,
+            WorkspaceState,
+            merge_workspace,
+        )
+
+        main = tmp_path / "main"
+        work = tmp_path / "wt"
+        (main / "src").mkdir(parents=True)
+        (work / "src").mkdir(parents=True)
+        (work / "src" / "new.py").write_text("VALUE = 1\n", encoding="utf-8")
+
+        workspace = TaskWorkspace(
+            workspace_id="task-t1",
+            task_id="T1",
+            execution_id="e",
+            path=work,
+            base_revision="abc123",
+            state=WorkspaceState.VERIFIED,
+        )
+        decision = merge_workspace(
+            None,  # type: ignore[arg-type]
+            workspace,
+            task_id="T1",
+            verified=True,
+            destination=main,
+            changed_files=("src/new.py",),
+        )
+        assert not decision.refused
+        assert (main / "src" / "new.py").read_text(encoding="utf-8") == "VALUE = 1\n"
+
+    def test_a_refused_merge_leaves_main_untouched(self, tmp_path: Path) -> None:
+        from edith.engineering.isolation import (
+            TaskWorkspace,
+            WorkspaceState,
+            merge_workspace,
+        )
+
+        main = tmp_path / "main"
+        work = tmp_path / "wt"
+        main.mkdir()
+        work.mkdir()
+        (work / "leak.py").write_text("x = 1\n", encoding="utf-8")
+        workspace = TaskWorkspace(
+            workspace_id="task-t1",
+            task_id="T1",
+            execution_id="e",
+            path=work,
+            base_revision="abc",
+            state=WorkspaceState.EXECUTING,
+        )
+        decision = merge_workspace(
+            None,  # type: ignore[arg-type]
+            workspace,
+            task_id="T1",
+            verified=False,
+            destination=main,
+            changed_files=("leak.py",),
+        )
+        assert decision.refused
+        assert not (main / "leak.py").exists(), "an unverified task must not reach main"
+
+    def test_a_traversing_path_is_refused_during_merge(self, tmp_path: Path) -> None:
+        """A worktree path is not trusted merely because the workspace was verified."""
+        from edith.engineering.isolation import (
+            TaskWorkspace,
+            WorkspaceState,
+            merge_workspace,
+        )
+
+        main = tmp_path / "main"
+        work = tmp_path / "wt"
+        main.mkdir()
+        work.mkdir()
+        (tmp_path / "outside.py").write_text("escaped\n", encoding="utf-8")
+        workspace = TaskWorkspace(
+            workspace_id="task-t1",
+            task_id="T1",
+            execution_id="e",
+            path=work,
+            base_revision="abc",
+            state=WorkspaceState.VERIFIED,
+        )
+        merge_workspace(
+            None,  # type: ignore[arg-type]
+            workspace,
+            task_id="T1",
+            verified=True,
+            destination=main,
+            changed_files=("../outside.py",),
+        )
+        assert (tmp_path / "outside.py").read_text(encoding="utf-8") == "escaped\n"

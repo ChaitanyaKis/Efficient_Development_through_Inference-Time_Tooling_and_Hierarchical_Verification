@@ -545,6 +545,8 @@ class EngineeringExecutor:
             task_id=execution.task_id,
             verified=True,
             blocking_issues=0,
+            destination=self.workspace.root,
+            changed_files=execution.changed_files,
         )
         if decision.refused:
             execution.outcome = TaskOutcome.FAILED

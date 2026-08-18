@@ -332,6 +332,8 @@ def merge_workspace(
     task_id: str,
     verified: bool,
     blocking_issues: int = 0,
+    destination: Path | None = None,
+    changed_files: tuple[str, ...] = (),
 ) -> MergeDecision:
     """Merge a verified workspace into the main tree, or refuse and say why.
 
@@ -353,14 +355,57 @@ def merge_workspace(
         )
         return decision
 
+    merged = _transfer(workspace, destination=destination, changed_files=changed_files)
     workspace.transition(WorkspaceState.MERGED)
     logger.info(
         "workspace.merged",
         workspace_id=workspace.workspace_id,
         task_id=task_id,
         base=workspace.base_revision[:12],
+        files=len(merged),
     )
     return decision
+
+
+def _transfer(
+    workspace: TaskWorkspace,
+    *,
+    destination: Path | None,
+    changed_files: tuple[str, ...],
+) -> tuple[str, ...]:
+    """Copy a verified task's changed files from its worktree into the main tree.
+
+    Until M6.2 this function did not exist and ``merge_workspace`` only moved the workspace's
+    *state* to MERGED. Every task therefore reported COMPLETED and merged while the main tree
+    received nothing, which is why six of six tasks completed and none passed an independently
+    written acceptance test. The docstring claimed a git operation was performed; none was.
+
+    Only the files the task declared are copied, and each destination is re-resolved and
+    checked to be inside the main tree before anything is written. A worktree path is not
+    trusted merely because the workspace that produced it was verified -- that is the same
+    containment rule the M1 path policy applies to agents, applied here to the executor.
+    """
+    if destination is None or not changed_files:
+        return ()
+
+    root = destination.resolve()
+    transferred: list[str] = []
+    for relative in changed_files:
+        source = (workspace.path / relative).resolve()
+        target = (root / relative).resolve()
+        if not source.is_file():
+            continue
+        if root != target and root not in target.parents:
+            logger.warning(
+                "workspace.merge_path_refused",
+                workspace_id=workspace.workspace_id,
+                path=relative,
+            )
+            continue
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        transferred.append(relative)
+    return tuple(transferred)
 
 
 def cleanup(gateway: ToolGateway, ledger: WorkspaceLedger) -> int:
