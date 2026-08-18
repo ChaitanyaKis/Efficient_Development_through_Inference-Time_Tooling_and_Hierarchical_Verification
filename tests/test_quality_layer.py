@@ -31,6 +31,7 @@ from edith.quality.principals import (
     SECURITY,
     TEST_SCOPE,
     TESTER,
+    TESTGEN,
     VERIFIER,
     Principal,
     may_execute,
@@ -223,17 +224,51 @@ class TestPrincipalIsolation:
         }
         assert executors == {Principal.TESTER, Principal.VERIFIER}
 
-    def test_only_the_tester_may_write(self) -> None:
+    def test_only_test_writing_principals_may_write(self) -> None:
+        """Reviewers, security and the judge write nothing. Only the two test roles do."""
         writers = {
             name for name, perms in QUALITY_PERMISSIONS.items() if may_write(perms)
         }
-        assert writers == {Principal.TESTER}
+        assert writers == {Principal.TESTER, Principal.TESTGEN}
+
+    def test_the_generator_is_a_strict_reduction_of_the_tester(self) -> None:
+        """M8 narrows the test writer rather than adding capability.
+
+        TESTGEN drops shell entirely and confines writes to ``tests/generated/**``, so it
+        cannot run the suite it wrote, and a generated file can never land on a hand-written
+        acceptance test. Recorded as an explicit relationship because the generic superset
+        check below cannot tell a deliberate reduction from a role quietly gaining reach.
+        """
+        from fnmatch import fnmatch
+
+        assert TESTGEN.allowed_tools < TESTER.allowed_tools
+        assert not may_execute(TESTGEN)
+
+        def allows(permissions: object, path: str) -> bool:
+            return any(
+                fnmatch(path, pattern)
+                for pattern in permissions.allowed_write_paths  # type: ignore[attr-defined]
+            )
+
+        # Everything the generator may write, the tester may write too.
+        assert allows(TESTGEN, "tests/generated/test_req.py")
+        assert allows(TESTER, "tests/generated/test_req.py")
+        # But the reverse fails: a hand-written acceptance test is out of the generator's reach.
+        assert allows(TESTER, "tests/test_acceptance.py")
+        assert not allows(TESTGEN, "tests/test_acceptance.py")
 
     def test_no_principal_is_a_superset_of_another(self) -> None:
-        """The invariant that stops permissions drifting together over time."""
+        """The invariant that stops permissions drifting together over time.
+
+        One pair is exempt and asserted separately: TESTGEN is a documented strict reduction
+        of TESTER, proved by
+        :meth:`test_the_generator_is_a_strict_reduction_of_the_tester`. Every other pair must
+        remain incomparable, which is what stops a reviewer acquiring a writer's reach.
+        """
+        reductions = {(Principal.TESTER, Principal.TESTGEN)}
         for name, permissions in QUALITY_PERMISSIONS.items():
             for other_name, other in QUALITY_PERMISSIONS.items():
-                if name == other_name:
+                if name == other_name or (name, other_name) in reductions:
                     continue
                 assert not (
                     permissions.allowed_tools > other.allowed_tools

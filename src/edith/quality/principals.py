@@ -40,6 +40,7 @@ class Principal(StrEnum):
     CODER = "coder"
     VERIFIER = "verifier"
     TESTER = "tester"
+    TESTGEN = "testgen"
     SECURITY = "security"
     REVIEWER = "reviewer"
     JUDGE = "judge"
@@ -59,6 +60,19 @@ TESTER = AgentPermissions(
     ),
     allowed_read_paths=("**",),
     allowed_write_paths=TEST_SCOPE,
+)
+
+#: Where requirement-derived tests are written. Deliberately narrower than TEST_SCOPE: a
+#: generated file must never land on top of a hand-written acceptance test.
+GENERATED_TEST_SCOPE: tuple[str, ...] = ("tests/generated/**",)
+
+#: Writes requirement-derived tests, and nothing else. No shell, so it cannot run the suite it
+#: wrote and report on its own work; no git; no reach into src/**, so it can neither implement
+#: the behaviour it is testing nor edit the human acceptance test into agreeing with it.
+TESTGEN = AgentPermissions(
+    allowed_tools=frozenset({"filesystem.read", "filesystem.write"}),
+    allowed_read_paths=("**",),
+    allowed_write_paths=GENERATED_TEST_SCOPE,
 )
 
 #: Reads everything, writes nothing, runs nothing. A security agent that could execute is a
@@ -85,6 +99,7 @@ JUDGE = AgentPermissions(
 QUALITY_PERMISSIONS: dict[Principal, AgentPermissions] = {
     Principal.VERIFIER: VERIFIER,
     Principal.TESTER: TESTER,
+    Principal.TESTGEN: TESTGEN,
     Principal.SECURITY: SECURITY,
     Principal.REVIEWER: REVIEWER,
     Principal.JUDGE: JUDGE,
