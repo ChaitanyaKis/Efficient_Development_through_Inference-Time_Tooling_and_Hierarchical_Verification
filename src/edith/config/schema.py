@@ -413,6 +413,14 @@ class OrchestrationConfig(StrictModel):
     #: Ceiling on total agent invocations in one execution, a backstop against any loop
     #: the per-task budgets fail to bound.
     max_total_agent_runs: int = Field(default=40, ge=1, le=500)
+    #: Ceiling on repair attempts across a whole run, on top of the per-task budget.
+    #:
+    #: Fan-out turns one request into many tasks, so the per-task budget alone no longer
+    #: bounds the run: eight functions at two repairs each is sixteen, and one pathological
+    #: function can spend an afternoon while the rest wait. This caps the total. Failures that
+    #: never enter repair -- environment, dependency, timeout, security -- do not count
+    #: against it, because they never consumed it.
+    max_total_repairs: int = Field(default=12, ge=0, le=100)
     #: Create an isolated git branch for each execution.
     use_branch_isolation: bool = True
     branch_prefix: str = "agent/exec"

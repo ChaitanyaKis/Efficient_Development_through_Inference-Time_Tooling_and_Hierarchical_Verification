@@ -21,10 +21,17 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from edith.agents.coder import CoderInput, CoderOutput, CodingAgent
 from edith.agents.critic import CriticAgent, CriticInput, CriticOutput, adjudicate
 from edith.agents.debugger import DebuggerInput, DebuggerOutput, DebuggingAgent
+from edith.agents.fanout import (
+    FanOutAgent,
+    PlanFanOutError,
+    fan_out,
+    signatures_in,
+)
 from edith.agents.planner import PlannerAgent, PlannerOutput, plan_to_tasks
 from edith.config.schema import EdithConfig
 from edith.context.engine import ContextBundle, ContextEngine
@@ -190,6 +197,7 @@ class Orchestrator:
         self._policy = PathPolicy.create(workspace.root, self.config.tools.paths)
         self._runs = 0
         self._model_calls = 0
+        self._run_repairs = 0
         self._baseline_ref: str | None = None
         self._memory = memory
         self._retriever = MemoryRetriever(memory) if memory is not None else None
@@ -359,6 +367,13 @@ class Orchestrator:
             )
 
         plan = PlannerOutput.model_validate(response.output)
+
+        # A plan carrying several functions in one step does not converge -- measured at
+        # seventeen repairs and no delivery. When the planner produced one, fan the request
+        # out into single-function steps instead. One extra model call, then pure formatting.
+        if _needs_fanout(plan, execution.request, self.workspace.root):
+            plan = self._fan_out(execution, plan)
+
         tasks = plan_to_tasks(plan, max_attempts=self.settings.max_task_attempts)
         if not tasks:
             raise PlanValidationError("planner produced no executable steps")
@@ -369,6 +384,36 @@ class Orchestrator:
         self.store.save_tasks(execution.execution_id, tasks)
         logger.info("plan.accepted", execution_id=execution.execution_id, tasks=len(tasks))
         return tasks
+
+    def _fan_out(self, execution: Execution, plan: PlannerOutput) -> PlannerOutput:
+        """Re-plan a multi-function request as one task per function.
+
+        Phase A is the only model call; everything after it is deterministic formatting. A
+        fan-out failure is not fatal on its own -- the original plan is still a plan, and
+        failing the run over a decomposition that could not be produced would be worse than
+        attempting the plan the planner gave us.
+        """
+        permissions = FanOutAgent.identity.permissions
+        agent = FanOutAgent(
+            provider=self._provider, tools=self._gateway(permissions, "fanout_planner")
+        )
+        self._model_calls += 1
+        try:
+            fanned = fan_out(agent, execution.request, goal=plan.goal)
+        except PlanFanOutError as exc:
+            logger.warning(
+                "fanout.declined",
+                execution_id=execution.execution_id,
+                reason=exc.message,
+            )
+            return plan
+        logger.info(
+            "fanout.applied",
+            execution_id=execution.execution_id,
+            before=len(plan.steps),
+            after=len(fanned.steps),
+        )
+        return fanned
 
     def _build_governor(self, execution: Execution) -> MemoryGovernor | None:
         """Create this execution's governor, resuming its budget if the run was interrupted.
@@ -914,11 +959,16 @@ class Orchestrator:
                     break
 
                 # Repair path: diagnose, then feed the diagnosis into the next attempt.
-                if action is FailureAction.REPAIR and repairs < self.settings.max_repair_attempts:
+                if (
+                    action is FailureAction.REPAIR
+                    and repairs < self.settings.max_repair_attempts
+                    and self._run_repairs < self.settings.max_total_repairs
+                ):
                     diagnosis = self._diagnose(
                         execution, task, report, bundle, coder_output, gateway
                     )
                     repairs += 1
+                    self._run_repairs += 1
                     guidance = diagnosis.as_guidance() if diagnosis else ""
                 else:
                     guidance = ""
@@ -1145,3 +1195,29 @@ __all__ = [
     "create_execution",
     "resume_graph",
 ]
+
+
+def _needs_fanout(plan: PlannerOutput, request: str, workspace_root: Path) -> bool:
+    """Whether this request should be re-planned as one task per function.
+
+    The trigger reads the *request*, not only the plan, and that correction came from a real
+    run. The premise was that a multi-function request produced one multi-function step; on a
+    four-function calculator the planner instead produced five steps that all wrote to a
+    single shared ``calculator.py`` with no tests, and two of them failed fighting over the
+    same file. Counting signatures per step saw nothing wrong with that.
+
+    Two conditions, and the second matters as much as the first:
+
+    A request naming two or more functions in call form is a fan-out candidate, however the
+    planner chose to slice it.
+
+    A plan touching files that already exist is not. Fan-out imposes a greenfield layout --
+    one module per function under ``src/backend/`` -- which is right for new work and wrong
+    for a repair to an existing project, where the files and their arrangement are already
+    decided. An existing project is left to the ordinary planner.
+    """
+    if any((workspace_root / name).exists() for step in plan.steps for name in step.files):
+        return False
+    if len(signatures_in(request)) >= 2:
+        return True
+    return any(len(signatures_in(step.description)) > 1 for step in plan.steps)
