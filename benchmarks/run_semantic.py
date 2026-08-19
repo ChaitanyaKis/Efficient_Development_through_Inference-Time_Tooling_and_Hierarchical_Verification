@@ -92,7 +92,11 @@ def plan_id(task: BenchmarkTask) -> str:
     return f"TASK-{TASKS.index(task) + 1:03d}"
 
 
-def plan_for(task: BenchmarkTask) -> ImplementationPlanDocument:
+def plan_for(
+    task: BenchmarkTask, description: str | None = None
+) -> ImplementationPlanDocument:
+    """Build a one-task plan. ``description`` overrides what the coder is told, so an
+    experiment can change the instruction without changing the task's identity."""
     return ImplementationPlanDocument.model_validate(
         {
             "product_name": "m7",
@@ -101,7 +105,7 @@ def plan_for(task: BenchmarkTask) -> ImplementationPlanDocument:
                 {
                     "task_id": plan_id(task),
                     "title": task.requirement[:80],
-                    "description": task.requirement,
+                    "description": description or task.requirement,
                     "agent": "backend",
                     "paths": [task.path],
                     "verification": ["tests"],
