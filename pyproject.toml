@@ -57,9 +57,10 @@ ignore = ["B008"]
 
 [tool.ruff.lint.per-file-ignores]
 # Asserts are the point of a test; subprocess/self-import checks do not apply there.
+# S310: the UI tests fetch fixed http://127.0.0.1 URLs from a server they just started.
 # Asserts are the point of a test; invoking `git`/`cmd` by name to arrange fixture state
 # is intentional, and local imports keep test helpers close to their use.
-"tests/**" = ["S101", "S603", "S607", "PLC0415"]
+"tests/**" = ["S101", "S603", "S607", "PLC0415", "S310"]
 # Benchmark fixtures are pytest files a generated project is measured against, and the
 # runners arrange fixture state with `git` and spawn pytest by design. Never linted before
 # M12, which is why "ruff clean" had always been reported against a narrower scope.

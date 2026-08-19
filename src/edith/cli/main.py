@@ -1336,6 +1336,50 @@ def experiment_command(
         _echo(result.verdict())
 
 
+@app.command(name="ui")
+def launch_ui(
+    config_dir: ConfigDirOption = None,
+    host: Annotated[
+        str, typer.Option("--host", help="Interface to bind. Loopback by default.")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="Port to listen on.")] = 8765,
+) -> None:
+    """Serve the local control surface.
+
+    A client over the existing engine: it starts executions through the same orchestrator the
+    ``execute`` command uses and reads state from the same durable store. It holds no authority
+    of its own, so nothing it can do is outside what the gateway already permits.
+
+    Binds to loopback. Exposing an autonomous code executor to a network is a deliberate act,
+    never a default, so ``--host`` warns when it is used to widen that.
+    """
+    from edith.ui.server import serve  # noqa: PLC0415 - keeps the CLI import light
+
+    config = _load(config_dir)
+    if host not in {"127.0.0.1", "localhost", "::1"}:
+        typer.secho(
+            f"warning: binding to {host} exposes Edith beyond this machine",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+
+    try:
+        server = serve(config, host=host, port=port)
+    except OSError as exc:
+        typer.secho(f"could not bind {host}:{port}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(EXIT_CONFIG_ERROR) from exc
+
+    _echo(f"edith ui  http://{host}:{port}")
+    _echo("ctrl-c to stop")
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        _echo("")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def main() -> int:
     """Console-script entry point."""
     try:
