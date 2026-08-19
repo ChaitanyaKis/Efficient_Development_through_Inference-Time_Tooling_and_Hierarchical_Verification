@@ -58,7 +58,7 @@ def write_generated(root: Path, tests: tuple[GeneratedTest, ...]) -> int:
     for index, test in enumerate(tests):
         (directory / f"test_gen_{index}.py").write_text(test.source, encoding="utf-8")
     for argv in (["git", "add", "-A"], ["git", "commit", "-qm", "requirement-derived tests"]):
-        subprocess.run(argv, cwd=str(root), capture_output=True, text=True)  # noqa: S603
+        subprocess.run(argv, cwd=str(root), capture_output=True, text=True)
     return len(tests)
 
 
@@ -77,7 +77,7 @@ def run_suite(implementation: str, tests: tuple[GeneratedTest, ...], task: Bench
     for index, test in enumerate(tests):
         (directory / f"test_gen_{index}.py").write_text(test.source, encoding="utf-8")
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        completed = subprocess.run(
             [sys.executable, "-m", "pytest", GENERATED_TEST_DIR, "-q", "-p", "no:cacheprovider"],
             cwd=str(root),
             capture_output=True,

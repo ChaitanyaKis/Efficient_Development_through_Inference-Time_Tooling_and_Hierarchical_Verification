@@ -60,6 +60,10 @@ ignore = ["B008"]
 # Asserts are the point of a test; invoking `git`/`cmd` by name to arrange fixture state
 # is intentional, and local imports keep test helpers close to their use.
 "tests/**" = ["S101", "S603", "S607", "PLC0415"]
+# Benchmark fixtures are pytest files a generated project is measured against, and the
+# runners arrange fixture state with `git` and spawn pytest by design. Never linted before
+# M12, which is why "ruff clean" had always been reported against a narrower scope.
+"benchmarks/**" = ["S101", "S603", "S607", "PLC0415"]
 # Fixtures imported from another test module are legitimately "redefined" by every test
 # that requests them, and scenario classes are named after the requirement labels they cover.
 "tests/test_hardening_suite.py" = ["S101", "S603", "S607", "PLC0415", "F811", "N801"]

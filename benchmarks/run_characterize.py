@@ -53,7 +53,7 @@ def acceptance_detail(root: Path, task: BenchmarkTask) -> tuple[bool, str]:
     name = task.task_id.lower().replace("-", "_")
     (root / "tests" / f"test_acc_{name}.py").write_text(task.acceptance, encoding="utf-8")
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        completed = subprocess.run(
             [
                 sys.executable,
                 "-m",

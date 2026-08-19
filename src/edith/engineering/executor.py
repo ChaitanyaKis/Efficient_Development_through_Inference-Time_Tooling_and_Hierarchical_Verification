@@ -709,10 +709,35 @@ class EngineeringExecutor:
 
             if not changed:
                 # M5 item 12: a task is not complete because the agent said so.
+                #
+                # But "produced nothing" and "produced something that was refused" are
+                # different failures, and M11 measured what conflating them costs. An edit
+                # rejected for a stated, actionable reason -- wrong mode, bad syntax, a
+                # deletion it did not declare -- carries exactly the evidence repair needs.
+                # Routing it to FAILED discarded that evidence and spent zero of the budget,
+                # so a task one round from success ended terminal. This is the mirror of
+                # M5.2's rule: that one stops unrepairable failures consuming the budget,
+                # this one stops a repairable failure being denied it.
+                #
+                # An agent that produced no edits at all is still FAILED: showing it its own
+                # absence tells it nothing.
+                # The concerns carry *why* each edit was refused. Repair without them is the
+                # M2.1 failure: an agent told only that it failed rewrites the same thing.
+                concerns = tuple(response.output.get("remaining_concerns", []))
                 execution.detail = (
                     "the agent changed no files"
                     + (f"; rejected: {', '.join(rejected)}" if rejected else "")
+                    + ("\n" + "\n".join(concerns) if concerns else "")
                 )
+                denied = tuple(response.output.get("denied_files", []))
+                if rejected and not denied:
+                    execution.outcome = TaskOutcome.REJECTED
+                    execution.failure_category = FailureCategory.CODE_FAILURE
+                elif denied:
+                    # A path outside the agent's scope is not its to fix, and retrying is how
+                    # a permission refusal becomes a retry loop. Classified as the security
+                    # failure it is, which M5.2's policy already excludes from repair.
+                    execution.failure_category = FailureCategory.SECURITY_FAILURE
                 execution.duration_seconds = time.monotonic() - started
                 return execution
 

@@ -86,7 +86,7 @@ def write_generated(root: Path, tests: tuple[GeneratedTest, ...]) -> int:
         # Commit them, or the task worktree branches from HEAD without them and the
         # generated suite never runs during verification -- which is the whole point.
         for argv in (["git", "add", "-A"], ["git", "commit", "-qm", "requirement-derived tests"]):
-            subprocess.run(  # noqa: S603 - fixed argv, shell=False
+            subprocess.run(
                 argv, cwd=str(root), capture_output=True, text=True
             )
     return written
@@ -113,7 +113,7 @@ def strength(task: BenchmarkTask, tests: tuple[GeneratedTest, ...]) -> dict[str,
         for index, test in enumerate(valid):
             (directory / f"test_gen_{index}.py").write_text(test.source, encoding="utf-8")
         try:
-            completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+            completed = subprocess.run(
                 [sys.executable, "-m", "pytest", GENERATED_TEST_DIR, "-q"],
                 cwd=str(root),
                 capture_output=True,

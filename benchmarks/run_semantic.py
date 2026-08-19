@@ -53,7 +53,7 @@ def prepare(root: Path) -> None:
         ["git", "add", "-A"],
         ["git", "commit", "-qm", "b"],
     ):
-        completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        completed = subprocess.run(
             argv, cwd=str(root), capture_output=True, text=True
         )
         if completed.returncode != 0:
@@ -122,7 +122,7 @@ def acceptance(root: Path, task: BenchmarkTask, suffix: str = "") -> bool:
     name = task.task_id.lower().replace("-", "_") + suffix
     (root / "tests" / f"test_acc_{name}.py").write_text(task.acceptance, encoding="utf-8")
     try:
-        completed = subprocess.run(  # noqa: S603 - fixed argv, shell=False
+        completed = subprocess.run(
             [str(Path(sys.executable)), "-m", "pytest", f"tests/test_acc_{name}.py", "-q"],
             cwd=str(root),
             capture_output=True,
