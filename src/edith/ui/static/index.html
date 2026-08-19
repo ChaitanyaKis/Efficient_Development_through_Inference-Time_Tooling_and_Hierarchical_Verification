@@ -211,6 +211,11 @@
     </section>
 
     <section>
+      <h2>Artifacts</h2>
+      <div class="body" id="artifacts"><div class="muted">no artifacts</div></div>
+    </section>
+
+    <section>
       <h2>Agent detail</h2>
       <div class="body" id="detail"><div class="muted">select an agent</div></div>
     </section>
@@ -275,13 +280,6 @@ function renderModelNote() {
   } else {
     note.innerHTML = `<span style="color:var(--bad)">unavailable</span> — ${esc(chosen.reason)}.
       EDITH will not substitute another model.`;
-  }
-  // Selecting a non-default profile is a configuration change the server must make; the UI
-  // reports it rather than pretending it already applied.
-  const isDefault = chosen.profile === STATUS.config.default_profile;
-  if (!isDefault) {
-    note.innerHTML += `<br><span style="color:var(--warn)">This build starts runs with the
-      configured default profile. Change <code>models.default_profile</code> to switch.</span>`;
   }
 }
 
@@ -368,7 +366,11 @@ async function startRun() {
   const { ok, data } = await api("/api/run", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ project: $("p-name").value, request: $("p-req").value }),
+    body: JSON.stringify({
+      project: $("p-name").value,
+      request: $("p-req").value,
+      profile: $("p-model").value,
+    }),
   });
   btn.disabled = false; btn.textContent = "START RUN";
   if (!ok) {
@@ -396,6 +398,34 @@ async function poll() {
 function render() {
   renderAgents(); renderDetail(); renderTimeline(); renderGraph();
   renderVerification(); renderSecurity(); renderChanges(); renderLogs();
+  loadArtifacts();
+}
+
+async function loadArtifacts() {
+  const pid = SNAP && SNAP.handle && SNAP.handle.project_id;
+  if (!pid) return;
+  const { data } = await api("/api/artifacts/" + encodeURIComponent(pid));
+  const items = (data && data.artifacts) || [];
+  if (!items.length) {
+    $("artifacts").innerHTML = `<div class="muted">no product artifacts recorded</div>`;
+    return;
+  }
+  $("artifacts").innerHTML = items.map((a) => `
+    <div style="padding:6px 0;border-bottom:1px solid var(--panel-2)">
+      <div style="font-family:var(--mono);font-size:11px">
+        ${esc(a.artifact_id)} <span class="muted">v${esc(a.version)} · ${esc(a.kind)}</span>
+      </div>
+      <div class="muted">${esc(a.title || "")}</div>
+      <div style="margin-top:4px">
+        <span class="authority ${a.approved ? "system" : "model"}">
+          ${a.approved ? "approved · human authority" : esc(a.authority)}
+        </span>
+        <span class="tag">${esc(a.status)}</span>
+        <span class="tag">${esc(a.validation)}</span>
+      </div>
+      ${a.supersedes ? `<div class="muted">supersedes ${esc(a.supersedes)}</div>` : ""}
+      ${a.depends_on.length ? `<div class="muted">depends on ${esc(a.depends_on.join(", "))}</div>` : ""}
+    </div>`).join("");
 }
 
 function renderTimeline() {
@@ -410,6 +440,10 @@ function renderTimeline() {
   stages.push({ n: ++n, t: "Merge", s: String(ex.state).includes("RELEASE") ? "COMPLETE" : "WAITING" });
 
   const meta = `<div class="row"><span class="k">execution</span><span class="v">${esc(ex.execution_id)}</span></div>
+    <div class="row"><span class="k">model</span><span class="v">${esc(h.model_name || "—")}</span></div>
+    ${h.verdict ? `<div class="row"><span class="k">verdict</span><span class="v">${esc(h.verdict)}</span></div>` : ""}
+    ${h.model_calls ? `<div class="row"><span class="k">model calls</span><span class="v">${esc(h.model_calls)}</span></div>` : ""}
+    ${h.duration_seconds ? `<div class="row"><span class="k">duration</span><span class="v">${esc(h.duration_seconds)}s</span></div>` : ""}
     <div class="row"><span class="k">state</span><span class="v">${esc(ex.state)}</span></div>
     <div class="row"><span class="k">attempts</span><span class="v">${esc(ex.attempts)}</span></div>
     <div class="row"><span class="k">tool calls</span><span class="v">${esc(SNAP.tool_calls)}</span></div>
@@ -484,12 +518,19 @@ function renderSecurity() {
 }
 
 function renderChanges() {
-  const changed = new Set();
-  for (const t of SNAP.tasks) { if (t.status && /COMPLETE|SUCCEED/.test(t.status)) changed.add(t.task_id); }
-  const files = SNAP.execution && SNAP.execution.summary ? [] : [];
-  $("changes").innerHTML = files.length
-    ? files.map((f) => `<div class="logline"><span class="src">+</span><span class="msg">${esc(f)}</span></div>`).join("")
-    : `<div class="muted">the engine reports changed files on completion; none recorded yet</div>`;
+  const h = SNAP.handle || {};
+  const files = h.changed_files || [];
+  if (!files.length) {
+    $("changes").innerHTML = h.running
+      ? `<div class="muted">run in progress</div>`
+      : `<div class="muted">the engine reported no changed files</div>`;
+    return;
+  }
+  $("changes").innerHTML = files.map((f) =>
+    `<div class="logline"><span class="src" style="color:var(--ok)">+</span>
+     <span class="msg">${esc(f)}</span></div>`).join("") +
+    `<div class="muted" style="margin-top:8px">reported by the engine on completion;
+     the UI never reads the workspace itself</div>`;
 }
 
 function renderLogs() {

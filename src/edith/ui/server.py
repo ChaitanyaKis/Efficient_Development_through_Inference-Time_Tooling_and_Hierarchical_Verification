@@ -39,7 +39,7 @@ from typing import Any
 from urllib.parse import urlparse
 
 from edith.config.schema import EdithConfig
-from edith.errors import EdithError
+from edith.errors import ConfigurationError, EdithError
 from edith.observability.logging import get_logger
 from edith.state.store import StateStore, open_store
 
@@ -63,11 +63,19 @@ class RunHandle:
     project_id: str
     project_name: str
     request: str
+    #: The model profile this run was actually started with. Recorded rather than assumed,
+    #: so the panel reports the model that ran, not the one currently selected.
+    profile: str = ""
+    model_name: str = ""
     thread: threading.Thread | None = None
     error: str = ""
     finished: bool = False
     #: Set when the orchestrator raised rather than returning a verdict.
     failure_category: str = ""
+    verdict: str = ""
+    changed_files: tuple[str, ...] = ()
+    model_calls: int = 0
+    duration_seconds: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -75,10 +83,16 @@ class RunHandle:
             "project_id": self.project_id,
             "project_name": self.project_name,
             "request": self.request,
+            "profile": self.profile,
+            "model_name": self.model_name,
             "running": bool(self.thread and self.thread.is_alive()),
             "finished": self.finished,
             "error": self.error,
             "failure_category": self.failure_category,
+            "verdict": self.verdict,
+            "changed_files": list(self.changed_files),
+            "model_calls": self.model_calls,
+            "duration_seconds": self.duration_seconds,
         }
 
 
@@ -109,18 +123,49 @@ class ExecutionManager:
         finally:
             store.close()
 
-    def start(self, project_name: str, request: str) -> RunHandle:
+    def start(self, project_name: str, request: str, profile: str | None = None) -> RunHandle:
         """Create a workspace and run the autonomous loop in the background.
 
+        ``profile`` selects a configured model for this run only. It is resolved through the
+        same provider factory the CLI uses and injected into the orchestrator, so choosing a
+        model changes nothing about the agents, the gateway, verification or merge -- which is
+        the property the whole abstraction exists to preserve. An unknown or unavailable
+        profile is refused rather than quietly replaced by the default.
+
         Raises:
-            EdithError: The workspace could not be created, or configuration refused it.
+            EdithError: The workspace could not be created, or the profile was refused.
         """
+        from edith.models.registry import build_provider  # noqa: PLC0415
         from edith.orchestrator import (  # noqa: PLC0415 - heavy import
             Orchestrator,
             create_execution,
         )
         from edith.schemas.common import new_id  # noqa: PLC0415
         from edith.workspaces import WorkspaceManager  # noqa: PLC0415
+
+        chosen = profile or self.config.models.default_profile
+        if chosen not in self.config.models.profiles:
+            raise ConfigurationError(
+                f"unknown model profile {chosen!r}; "
+                f"available: {sorted(self.config.models.profiles)}",
+                details={"profile": chosen},
+            )
+        params = self.config.models.profiles[chosen]
+
+        # Built before the workspace so an unavailable model fails the request rather than
+        # leaving an orphaned project directory behind.
+        provider = build_provider(self.config, chosen)
+        health = provider.health_check()
+        if not health.configured_model_present:
+            provider.close()
+            raise ConfigurationError(
+                f"model {params.model_name!r} is not available in the local runtime",
+                details={
+                    "profile": chosen,
+                    "detail": health.detail,
+                    "remediation": health.remediation,
+                },
+            )
 
         manager = WorkspaceManager(self.config)
         workspace = manager.create(project_name, new_id("proj"))
@@ -132,13 +177,21 @@ class ExecutionManager:
             project_id=workspace.project_id,
             project_name=project_name,
             request=request,
+            profile=chosen,
+            model_name=params.model_name,
         )
 
         def _run() -> None:
             worker_store = open_store(self._state_dir())
-            orchestrator = Orchestrator(self.config, worker_store, workspace)
+            orchestrator = Orchestrator(
+                self.config, worker_store, workspace, provider=provider
+            )
             try:
-                orchestrator.run(execution)
+                result = orchestrator.run(execution)
+                handle.verdict = str(result.verdict)
+                handle.changed_files = tuple(result.changed_files)
+                handle.model_calls = result.model_calls
+                handle.duration_seconds = round(result.duration_seconds, 1)
             except EdithError as exc:
                 handle.error = exc.message
                 handle.failure_category = exc.category.value
@@ -165,6 +218,40 @@ class ExecutionManager:
         return state_dir if state_dir.is_absolute() else Path.cwd() / state_dir
 
     # -- Projections over durable state --------------------------------------------
+
+    def artifacts(self, project_id: str) -> list[dict[str, Any]]:
+        """Product artifacts for a project, with the authority each actually carries.
+
+        Status and authority are reported exactly as stored. A draft must never be shown as
+        though it were approved -- the whole point of M4's authority model is that a model
+        recommendation and a human decision are different things, and a panel that blurred
+        them would undo it.
+        """
+        from edith.product.store import open_artifacts  # noqa: PLC0415
+
+        try:
+            with open_artifacts(self._state_dir()) as store:
+                found = store.current(project_id)
+        except EdithError:
+            return []
+        return [
+            {
+                "artifact_id": item.artifact_id,
+                "kind": str(item.kind),
+                "version": item.version,
+                "title": item.title,
+                "status": str(item.status),
+                "authority": str(item.authority),
+                "author": item.author,
+                "validation": (
+                    str(item.validation.state) if item.validation else "NOT VALIDATED"
+                ),
+                "depends_on": [str(ref) for ref in item.depends_on],
+                "supersedes": item.supersedes or "",
+                "approved": str(item.status).upper() == "APPROVED",
+            }
+            for item in found
+        ]
 
     def snapshot(self, execution_id: str) -> dict[str, Any]:
         """Everything the engine recorded about one execution.
@@ -455,6 +542,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(
                 {"runs": [handle.as_dict() for handle in self.manager.runs.values()]}
             )
+        elif path.startswith("/api/artifacts/"):
+            project_id = path.rsplit("/", 1)[-1]
+            self._send_json({"artifacts": self.manager.artifacts(project_id)})
         elif path.startswith("/api/run/"):
             execution_id = path.rsplit("/", 1)[-1]
             self._send_json(self.manager.snapshot(execution_id))
@@ -472,6 +562,7 @@ class Handler(BaseHTTPRequestHandler):
         payload = self._read_json()
         name = str(payload.get("project") or "").strip()
         request = str(payload.get("request") or "").strip()
+        profile = str(payload.get("profile") or "").strip() or None
         if not name or not request:
             self._send_json(
                 {"error": "both a project name and a request are required"}, status=400
@@ -479,7 +570,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         try:
-            handle = self.manager.start(name, request)
+            handle = self.manager.start(name, request, profile)
         except EdithError as exc:
             # The engine refused. Surface the refusal and its category rather than a
             # generic failure, because the category is what says whether it is recoverable.

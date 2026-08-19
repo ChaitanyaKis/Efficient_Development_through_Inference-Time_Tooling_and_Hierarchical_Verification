@@ -259,3 +259,64 @@ class TestTheDashboardDoesNotOverclaim:
         """Agent output and error text reach the page; none of it may become markup."""
         page = Path("src/edith/ui/static/index.html").read_text(encoding="utf-8")
         assert "const esc = (s)" in page
+
+
+class TestPerRunModelSelection:
+    """Choosing a model must change the provider and nothing else."""
+
+    def test_an_unknown_profile_is_refused(self, config: Any) -> None:
+        from edith.errors import ConfigurationError
+
+        manager = ExecutionManager(config=config)
+        with pytest.raises(ConfigurationError, match="unknown model profile"):
+            manager.start("p", "do something", "no-such-profile")
+
+    def test_an_unavailable_model_is_refused_not_substituted(self, config: Any) -> None:
+        """The failure mode that would silently invalidate a run's results."""
+        from edith.errors import ConfigurationError
+
+        unavailable = [
+            entry["profile"] for entry in describe_models(config) if not entry["available"]
+        ]
+        if not unavailable:
+            pytest.skip("every configured profile is pulled locally")
+        manager = ExecutionManager(config=config)
+        with pytest.raises(ConfigurationError, match="not available"):
+            manager.start("p", "do something", unavailable[0])
+
+    def test_the_profile_reaches_the_orchestrator_as_a_provider(self) -> None:
+        """Injected, so agents, gateway, verification and merge are untouched by the choice."""
+        source = Path("src/edith/ui/server.py").read_text(encoding="utf-8")
+        assert "build_provider(self.config, chosen)" in source
+        assert "provider=provider" in source
+
+    def test_the_handle_records_the_model_that_actually_ran(self) -> None:
+        from edith.ui.server import RunHandle
+
+        handle = RunHandle(
+            execution_id="e", project_id="p", project_name="n", request="r",
+            profile="default", model_name="some-model:3b",
+        )
+        assert handle.as_dict()["model_name"] == "some-model:3b"
+
+
+class TestArtifactAuthority:
+    def test_an_unknown_project_yields_no_artifacts(self, config: Any) -> None:
+        manager = ExecutionManager(config=config)
+        assert manager.artifacts("proj_missing") == []
+
+    def test_approval_is_derived_from_stored_status(self) -> None:
+        """A draft must never render as approved."""
+        source = Path("src/edith/ui/server.py").read_text(encoding="utf-8")
+        assert 'str(item.status).upper() == "APPROVED"' in source
+
+    def test_the_page_distinguishes_human_authority_from_model_authority(self) -> None:
+        page = Path("src/edith/ui/static/index.html").read_text(encoding="utf-8")
+        assert "approved · human authority" in page
+
+    def test_changed_files_come_from_the_engine_result(self) -> None:
+        """The UI must not scan the workspace itself."""
+        source = Path("src/edith/ui/server.py").read_text(encoding="utf-8")
+        assert "result.changed_files" in source
+        page = Path("src/edith/ui/static/index.html").read_text(encoding="utf-8")
+        assert "the UI never reads the workspace itself" in page
