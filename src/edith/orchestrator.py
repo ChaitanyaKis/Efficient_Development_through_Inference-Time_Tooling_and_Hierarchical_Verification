@@ -30,7 +30,7 @@ from edith.config.schema import EdithConfig
 from edith.context.engine import ContextBundle, ContextEngine
 from edith.environment.python_env import local_module_names
 from edith.errors import EdithError, FailureCategory
-from edith.integrity import IntegrityReport
+from edith.integrity import IntegrityReport, tests_exercise_changes
 from edith.memory.governor import (
     ExecutionMemoryBudget,
     GovernorSettings,
@@ -874,21 +874,41 @@ class Orchestrator:
                 )
 
                 if verdict is Verdict.PASS:
-                    return TaskOutcome(Verdict.PASS, reason, changed, repairs)
+                    # Green tests are evidence only if they ran against the change. A suite
+                    # that passes without importing the changed module proves the suite
+                    # works, not the code -- the vacuous verification M5 found in its own
+                    # benchmark, reaching adjudication by a third route.
+                    unexercised = tests_exercise_changes(self.workspace.root, tuple(changed))
+                    if unexercised is None:
+                        return TaskOutcome(Verdict.PASS, reason, changed, repairs)
+                    verdict, reason = Verdict.FAIL, unexercised
+                    report = report.model_copy(
+                        update={"failure_category": FailureCategory.TEST_FAILURE}
+                    )
+                    logger.info(
+                        "task.unexercised", task_id=task.task_id, reason=unexercised
+                    )
 
                 last_reason = reason
                 last_category = report.failure_category or FailureCategory.REQUIREMENT_FAILURE
-                self._record_failure(
-                    execution, task, last_category, "REPAIR", reason, task.attempts
-                )
 
                 if is_security_failure(last_category):
+                    self._record_failure(
+                        execution, task, last_category, "BLOCKED", reason, task.attempts
+                    )
                     return TaskOutcome(
                         Verdict.BLOCKED, reason, changed, repairs, last_category
                     )
 
                 action = decide(
                     last_category, attempts=task.attempts, max_attempts=task.max_attempts
+                )
+                # Recorded after the policy has spoken, and with what it actually decided.
+                # This previously wrote "REPAIR" unconditionally, so an escalated environment
+                # failure was filed as though the coder had been asked to fix it -- the exact
+                # misattribution M5.2 exists to prevent, in the record rather than the policy.
+                self._record_failure(
+                    execution, task, last_category, str(action.value), reason, task.attempts
                 )
                 if action in {FailureAction.ESCALATE, FailureAction.ABORT}:
                     break
@@ -1007,6 +1027,20 @@ class Orchestrator:
         if not aborted_reason and graph.succeeded():
             verdict, text, final_repairs = self._final_gate(execution, tasks, changed)
             repairs += final_repairs
+
+        # Checked once more over everything the execution changed. The per-task check cannot
+        # see this case: one task writes the module before any test exists, the next writes a
+        # test that changes no implementation, and each is individually unobjectionable while
+        # the pair leaves the code untested. Only the union shows it.
+        if verdict is Verdict.PASS:
+            unexercised = tests_exercise_changes(self.workspace.root, tuple(changed))
+            if unexercised is not None:
+                logger.info(
+                    "execution.unexercised",
+                    execution_id=execution.execution_id,
+                    reason=unexercised,
+                )
+                verdict, text = Verdict.FAIL, unexercised
 
         if verdict is Verdict.PASS:
             self.store.record_transition(

@@ -24,6 +24,7 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass, field
 from enum import StrEnum
+from pathlib import Path
 
 from pydantic import Field
 
@@ -404,3 +405,99 @@ def build_report(
             paths=report.test_files_changed,
         )
     return report
+
+
+#: Directories that never contain the project's own tests.
+_NON_TEST_DIRS = frozenset(
+    {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".edith", "node_modules"}
+)
+
+
+def _module_paths_for(changed: tuple[str, ...]) -> set[str]:
+    """The importable names a changed Python file could be referred to by.
+
+    A test may import ``src.backend.mathops``, ``backend.mathops`` or plain ``mathops``
+    depending on the project's layout, so any of them counts as exercising the change.
+    """
+    names: set[str] = set()
+    for relative in changed:
+        posix = relative.replace("\\", "/")
+        if not posix.endswith(".py"):
+            continue
+        parts = posix[:-3].split("/")
+        if not parts:
+            continue
+        names.add(parts[-1])
+        for start in range(len(parts)):
+            names.add(".".join(parts[start:]))
+    return names
+
+
+def tests_exercise_changes(
+    project_root: Path, changed: tuple[str, ...]
+) -> str | None:
+    """Return a reason when the test suite never imports what the task changed.
+
+    Green tests are only evidence if they ran against the change. A suite that passes without
+    importing the changed module proves the suite works, not the code -- which is the vacuous
+    verification M5 caught in its own benchmark and M8 caught in generated tests, arriving
+    here by a third route: a coder that writes ``assert 1 + 1 == 2`` in a file named after the
+    module it never imports.
+
+    Deterministic and import-based: no model, no execution, no judgement. It answers only
+    "was the changed code reachable from the tests", and stays silent when the task changed no
+    Python source or when the project has no tests to inspect.
+    """
+    targets = _module_paths_for(
+        tuple(item for item in changed if not _is_test_path(item))
+    )
+    if not targets:
+        return None
+
+    test_sources: list[str] = []
+    for path in project_root.rglob("*.py"):
+        if any(part in _NON_TEST_DIRS for part in path.parts):
+            continue
+        if not _is_test_path(str(path.relative_to(project_root))):
+            continue
+        try:
+            test_sources.append(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError):
+            continue
+    if not test_sources:
+        return None
+
+    imported: set[str] = set()
+    for source in test_sources:
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+                imported.add(node.module.split(".")[-1])
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    imported.add(alias.name)
+                    imported.add(alias.name.split(".")[-1])
+
+    if imported & targets:
+        return None
+    changed_modules = ", ".join(sorted({t for t in targets if "." not in t})) or "the change"
+    return (
+        f"the tests passed but never import {changed_modules}, so they verify nothing about "
+        f"this change. Import the changed module in a test and assert its behaviour."
+    )
+
+
+def _is_test_path(relative: str) -> bool:
+    """Whether a repository-relative path is one of the project's tests."""
+    posix = relative.replace("\\", "/")
+    name = posix.rsplit("/", 1)[-1]
+    return (
+        posix.startswith("tests/")
+        or "/tests/" in posix
+        or name.startswith("test_")
+        or name.endswith("_test.py")
+    )

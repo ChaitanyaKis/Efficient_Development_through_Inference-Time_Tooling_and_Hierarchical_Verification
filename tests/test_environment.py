@@ -136,10 +136,28 @@ class TestFourWayClassification:
         assert not diagnosis.code_executed
 
     def test_no_tests_collected_proves_nothing(self) -> None:
-        """Exit 5 means nothing ran, so nothing may be claimed about correctness."""
+        """Exit 5 means nothing ran, so nothing may be claimed about correctness.
+
+        That guarantee lives in ``code_executed``, and it is unchanged: no later stage may
+        read this result as evidence about the code.
+
+        The *category* was wrong, though, and it cost a whole class of project. pytest ran
+        perfectly and found nothing to run, which is missing work rather than a broken
+        machine; filing it as ENVIRONMENT_FAILURE escalated it to a human and left any
+        greenfield project permanently unverifiable, because the first task had no tests and
+        every task after it inherited the same verdict. TEST_FAILURE is honest and, unlike
+        escalation, lets the repair loop ask for the tests that would settle the question.
+        """
         diagnosis = classify_failure("collected 0 items\n", exit_code=5)
-        assert diagnosis.category is FailureCategory.ENVIRONMENT_FAILURE
-        assert not diagnosis.code_executed
+        assert diagnosis.category is FailureCategory.TEST_FAILURE
+        assert not diagnosis.code_executed, "nothing ran, so nothing is proven"
+        assert "no tests" in diagnosis.reason
+        assert "tests/" in diagnosis.remediation
+
+    def test_no_tests_collected_is_not_blamed_on_the_environment(self) -> None:
+        """The machine is fine; saying otherwise sends a fixable problem to a human."""
+        diagnosis = classify_failure("collected 0 items\n", exit_code=5)
+        assert diagnosis.category is not FailureCategory.ENVIRONMENT_FAILURE
 
     def test_a_broken_import_of_a_name_is_a_code_failure(self) -> None:
         output = "E   ImportError: cannot import name 'low_stock' from 'inventory'"

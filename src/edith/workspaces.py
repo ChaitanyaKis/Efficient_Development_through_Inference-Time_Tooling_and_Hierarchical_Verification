@@ -141,6 +141,8 @@ class WorkspaceManager:
                 f"workspace already exists: {target}", details={"workspace": str(target)}
             )
         target.mkdir(parents=True, exist_ok=True)
+        _scaffold_project(target)
+        _initialise_repository(target)
         logger.info("workspace.ready", project=name, path=str(target))
         return ProjectWorkspace(project_id=project_id, name=name, root=target)
 
@@ -166,3 +168,99 @@ class WorkspaceManager:
         if not self._root.is_dir():
             return ()
         return tuple(sorted(entry.name for entry in self._root.iterdir() if entry.is_dir()))
+
+
+def _initialise_repository(target: Path) -> None:
+    """Make a newly created workspace a git repository.
+
+    Git is not optional decoration here. CLAUDE.md requires every implementation task to be
+    recoverable, and three mechanisms depend on a real repository: ``git.diff`` reports what a
+    task changed, M5.1 worktrees give each task an isolated tree, and M5.2's merge copies only
+    verified files out of one. A workspace without git silently loses all three -- the tools
+    fail, isolation cannot start, and the failure surfaces far from its cause.
+
+    Every benchmark harness ran ``git init`` itself, which is exactly why this gap survived to
+    the first run started from the UI.
+
+    Only for workspaces Edith creates. :meth:`WorkspaceManager.adopt` deliberately does not do
+    this: a directory the user pointed Edith at is theirs, and initialising a repository inside
+    it is not Edith's decision to make.
+
+    A failure here is logged and tolerated rather than raised. Git may be absent on the
+    machine, and the tools that need it already report their own refusals clearly; refusing to
+    create the workspace at all would be a worse trade.
+    """
+    if (target / ".git").exists():
+        return
+    try:
+        from edith.tools.process import resolve_executable, run_process  # noqa: PLC0415
+
+        executable = resolve_executable("git", ("git",))
+        for argv in (
+            [executable, "init", "-q"],
+            # A local identity, because the process runs with a sanitised environment and so
+            # cannot see the user's global git config. Set on this repository only: Edith has
+            # no business writing to anyone's global configuration, and a commit attributed to
+            # Edith is more honest than one wearing the user's name.
+            [executable, "config", "user.email", "edith@localhost"],
+            [executable, "config", "user.name", "Edith"],
+            # A first commit gives worktrees a base revision to branch from. Without one,
+            # `git worktree add` has no HEAD and isolation cannot begin.
+            [executable, "commit", "--allow-empty", "-qm", "edith: workspace created"],
+        ):
+            result = run_process(
+                argv,
+                cwd=target,
+                timeout_seconds=30.0,
+                max_output_bytes=64_000,
+                env_passthrough=(),
+            )
+            if result.exit_code != 0:
+                logger.warning(
+                    "workspace.git_init_failed",
+                    path=str(target),
+                    command=" ".join(argv[1:]),
+                    error=str(result.stderr)[:200],
+                )
+                return
+    except Exception as exc:  # noqa: BLE001 - a workspace without git is degraded, not broken
+        logger.warning("workspace.git_unavailable", path=str(target), error=str(exc)[:200])
+
+
+#: Written at the workspace root so generated tests can import generated code.
+#:
+#: pytest puts the directory containing the root ``conftest.py`` on ``sys.path``, which makes
+#: ``from src.backend.thing import x`` resolve. Without it a generated test cannot import the
+#: module it was written to cover, verification fails on a collection error, and the failure
+#: looks like a missing dependency rather than a missing path entry.
+_CONFTEST = "\n".join(
+    (
+        '"""Make this project importable from its own tests.',
+        "",
+        "Written by Edith when the workspace was created. pytest adds the directory holding",
+        "the root conftest to sys.path, so `from src.package.module import thing` resolves",
+        "from tests/.",
+        '"""',
+        "",
+    )
+)
+
+
+def _scaffold_project(target: Path) -> None:
+    """Give a new workspace the minimum structure a Python project needs to be verifiable.
+
+    Two directories and one conftest -- deliberately close to nothing. Edith does not know
+    what the project will become, so it does not impose a layout; it only ensures that code
+    written under ``src/`` can be imported by tests written under ``tests/``, which is the
+    precondition for verification meaning anything at all.
+
+    Every benchmark harness created this structure itself, which is why its absence only
+    surfaced on the first project created through the real workspace path: generated tests
+    could not import the generated module, and the collection error was then misread as a
+    missing third-party dependency.
+    """
+    for relative in ("src", "tests"):
+        (target / relative).mkdir(parents=True, exist_ok=True)
+    conftest = target / "conftest.py"
+    if not conftest.exists():
+        conftest.write_text(_CONFTEST, encoding="utf-8")

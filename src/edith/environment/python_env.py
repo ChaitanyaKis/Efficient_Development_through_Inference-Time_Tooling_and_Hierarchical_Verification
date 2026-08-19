@@ -233,20 +233,51 @@ def local_module_names(project_root: Path) -> set[str]:
     package, and the installer would try to fetch it from an index.
     """
     names: set[str] = set()
-    for path in project_root.iterdir():
-        if path.is_dir() and (path / "__init__.py").is_file():
-            names.add(path.name)
-        elif path.is_file() and path.suffix == ".py":
-            names.add(path.stem)
-    for source_dir in ("src", "lib"):
-        candidate = project_root / source_dir
-        if candidate.is_dir():
-            for path in candidate.iterdir():
-                if path.is_dir() and (path / "__init__.py").is_file():
-                    names.add(path.name)
-                elif path.is_file() and path.suffix == ".py":
-                    names.add(path.stem)
+    for path in _project_sources(project_root):
+        names.add(path.stem)
+        # A package directory is importable by its own name too.
+        if path.name == "__init__.py":
+            names.add(path.parent.name)
+        names.add(path.parent.name)
+    names.discard("__init__")
+    names.discard(project_root.name)
     return names
+
+
+#: Directories that are never the project's own source.
+_IGNORED_DIRS = frozenset(
+    {".git", ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache",
+     "node_modules", ".edith", "build", "dist", ".tox", "site-packages"}
+)
+
+#: A generated project should not be walked without limit.
+_MAX_SOURCE_FILES = 2000
+
+
+def _project_sources(project_root: Path) -> list[Path]:
+    """Every Python file the project owns, at any depth.
+
+    Walking the whole tree matters because the alternative misclassifies failures. A
+    one-level scan misses ``src/backend/calc2.py`` entirely, so a wrong import of the
+    project's *own* module reads as a missing third-party package: filed as
+    DEPENDENCY_FAILURE, escalated to a human, and never repaired -- when the actual fix is
+    one line of import that the coding agent could have written.
+    """
+    found: list[Path] = []
+    stack = [project_root]
+    while stack and len(found) < _MAX_SOURCE_FILES:
+        current = stack.pop()
+        try:
+            entries = list(current.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name not in _IGNORED_DIRS and not entry.name.startswith("."):
+                    stack.append(entry)
+            elif entry.suffix == ".py":
+                found.append(entry)
+    return found
 
 
 def parse_requirements(text: str) -> list[tuple[str, str]]:

@@ -195,12 +195,27 @@ def classify_failure(
         )
 
     if exit_code == 5:
-        # pytest's "no tests collected". Nothing was verified, so nothing was proven.
+        # pytest's "no tests collected". Nothing was verified, so nothing was proven -- and
+        # ``code_executed=False`` keeps that fact attached to the result, so no later stage can
+        # read this as evidence about the code.
+        #
+        # It is not an environment fault: pytest ran perfectly and found nothing to run. The
+        # project simply has no tests for this change, which is missing work rather than a
+        # broken machine. Classifying it as ENVIRONMENT_FAILURE escalated it to a human and
+        # left a greenfield project permanently unverifiable -- every task failed, forever,
+        # because the first one had nothing to test it.
+        #
+        # TEST_FAILURE is the honest label: the verification contract is unsatisfied, the
+        # remedy is inside the agent's authority, and the repair loop can act on it. This does
+        # not make an unverified change pass; it asks for the tests that would verify it.
         return FailureDiagnosis(
-            category=FailureCategory.ENVIRONMENT_FAILURE,
-            reason="no tests were collected, so nothing was verified",
+            category=FailureCategory.TEST_FAILURE,
+            reason="the project has no tests, so this change is unverified",
             code_executed=False,
-            remediation="Check the test paths and that test files are discoverable.",
+            remediation=(
+                "Add a test file under tests/ that imports the changed module and asserts "
+                "its documented behaviour."
+            ),
         )
 
     return FailureDiagnosis(
