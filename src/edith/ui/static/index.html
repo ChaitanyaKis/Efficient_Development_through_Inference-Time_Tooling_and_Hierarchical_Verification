@@ -256,7 +256,9 @@ function dotFor(state) {
   if (/COMPLETE|PASS|VERIFIED|SUCCEED|MERGED|DONE/.test(s)) return "ok";
   if (/RUN|EXEC|PROGRESS/.test(s)) return "run";
   if (/FAIL|REJECT|ERROR|EXHAUST|DENIED|BLOCKED/.test(s)) return "bad";
-  if (/REPAIR|RETRY|WAIT|PENDING/.test(s)) return "warn";
+  // DEFERRED is amber, never green: the task wrote its files but did not verify, and
+  // the final gate has not ruled on it yet.
+  if (/REPAIR|RETRY|WAIT|PENDING|DEFER/.test(s)) return "warn";
   return "";
 }
 

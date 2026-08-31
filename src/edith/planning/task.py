@@ -21,12 +21,21 @@ class TaskStatus(StrEnum):
 
     ``BLOCKED`` is distinct from ``FAILED``: a blocked task never ran, because something it
     depended on failed. Collapsing the two would make a failure report unreadable.
+
+    ``DEFERRED`` is distinct from ``SUCCEEDED`` for the same reason. A task that wrote its
+    files but left the suite red is not a failure -- a later task may well be the one that
+    turns it green, and refusing to continue would strand the remaining work and guarantee
+    the run fails. But it is not a success either, and recording it as one produced exactly
+    the report this enum exists to prevent: four green tasks over code whose tests did not
+    run, with only the final gate quietly disagreeing. A deferred task unlocks its
+    dependents; whether it was right is decided by the final gate, not here.
     """
 
     PENDING = "PENDING"
     READY = "READY"
     RUNNING = "RUNNING"
     SUCCEEDED = "SUCCEEDED"
+    DEFERRED = "DEFERRED"
     FAILED = "FAILED"
     BLOCKED = "BLOCKED"
     CANCELLED = "CANCELLED"
@@ -38,7 +47,13 @@ class TaskStatus(StrEnum):
 
 
 _TERMINAL_TASK_STATES = frozenset(
-    {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.BLOCKED, TaskStatus.CANCELLED}
+    {
+        TaskStatus.SUCCEEDED,
+        TaskStatus.DEFERRED,
+        TaskStatus.FAILED,
+        TaskStatus.BLOCKED,
+        TaskStatus.CANCELLED,
+    }
 )
 
 #: Allowed task transitions. Anything absent here is rejected, so an inconsistent status
@@ -54,12 +69,14 @@ TASK_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
     TaskStatus.RUNNING: frozenset(
         {
             TaskStatus.SUCCEEDED,
+            TaskStatus.DEFERRED,
             TaskStatus.FAILED,
             TaskStatus.READY,
             TaskStatus.CANCELLED,
         }
     ),
     TaskStatus.SUCCEEDED: frozenset(),
+    TaskStatus.DEFERRED: frozenset(),
     TaskStatus.FAILED: frozenset(),
     TaskStatus.BLOCKED: frozenset(),
     TaskStatus.CANCELLED: frozenset(),

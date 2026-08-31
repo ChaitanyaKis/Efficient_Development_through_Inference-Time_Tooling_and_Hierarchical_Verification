@@ -1054,7 +1054,9 @@ class Orchestrator:
                     task_id=task.task_id,
                     reason="changed files but the suite is not green yet",
                 )
-                graph.mark_succeeded(task.task_id)
+                graph.mark_deferred(
+                    task.task_id, "changed files but the suite was not green yet"
+                )
                 deferred.append(task.task_id)
             else:
                 graph.mark_failed(task.task_id, outcome.reason, outcome.failure_category)
@@ -1074,7 +1076,7 @@ class Orchestrator:
         text = (
             aborted_reason or last_failure or "one or more tasks failed verification"
         )
-        if not aborted_reason and graph.succeeded():
+        if not aborted_reason and graph.settled_without_failure():
             verdict, text, final_repairs = self._final_gate(execution, tasks, changed)
             repairs += final_repairs
 

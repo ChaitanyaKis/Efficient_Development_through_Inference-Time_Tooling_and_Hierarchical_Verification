@@ -142,10 +142,15 @@ class TaskGraph:
                 queue.append(task_id)
         return tuple(ordered)
 
+    #: Statuses that let a dependent task proceed. ``DEFERRED`` is included deliberately: a
+    #: deferred task wrote its files and is waiting on the final gate, so blocking its
+    #: dependents would strand the very work that might turn the suite green.
+    _UNLOCKING = frozenset({TaskStatus.SUCCEEDED, TaskStatus.DEFERRED})
+
     def dependencies_satisfied(self, task: Task) -> bool:
-        """Whether every dependency of ``task`` has succeeded."""
+        """Whether every dependency of ``task`` has finished without failing."""
         return all(
-            self._tasks[dependency].status is TaskStatus.SUCCEEDED
+            self._tasks[dependency].status in self._UNLOCKING
             for dependency in task.dependencies
         )
 
@@ -201,6 +206,18 @@ class TaskGraph:
         self.get(task_id).transition_to(TaskStatus.SUCCEEDED)
         self.refresh()
 
+    def mark_deferred(self, task_id: str, reason: str) -> None:
+        """Record that a task changed files but did not verify, and unlock dependents.
+
+        Not a success and not a failure: the final gate decides. The reason is kept on the
+        task so a report can say why it is neither, rather than leaving a status the reader
+        has to guess at.
+        """
+        task = self.get(task_id)
+        task.transition_to(TaskStatus.DEFERRED)
+        task.failure_reason = reason
+        self.refresh()
+
     def mark_failed(
         self,
         task_id: str,
@@ -235,8 +252,17 @@ class TaskGraph:
         return all(task.status.terminal for task in self._tasks.values())
 
     def succeeded(self) -> bool:
-        """True when every task succeeded."""
+        """True when every task actually verified. Deferred tasks do not count."""
         return all(task.status is TaskStatus.SUCCEEDED for task in self._tasks.values())
+
+    def settled_without_failure(self) -> bool:
+        """True when every task finished and none failed, deferrals included.
+
+        This, not :meth:`succeeded`, is the precondition for running the final gate: a run
+        whose tasks all deferred has produced exactly the code the gate exists to judge, and
+        skipping the gate would report a failure without ever checking the work.
+        """
+        return all(task.status in self._UNLOCKING for task in self._tasks.values())
 
     def summary(self) -> dict[str, int]:
         """Count of tasks by status, for reporting."""
