@@ -219,11 +219,12 @@ class TestAssemblyTask:
         assert last.title == "Assemble calculator"
 
     def test_it_contains_no_logic(self) -> None:
+        """The module half only. The step also specifies a test file, which needs a ``def``."""
         steps = specs_to_steps(specs("add", "divide"), REQUEST, assembly_module="calculator")
-        assembly = steps[-1].description
-        assert "__all__" in assembly
-        assert "ONLY these import lines" in assembly
-        assert "def " not in assembly
+        module_half = steps[-1].description.split("Also create tests/")[0]
+        assert "__all__" in module_half
+        assert "ONLY these import lines" in module_half
+        assert "def " not in module_half
 
     def test_a_single_function_request_gets_no_assembly(self) -> None:
         """Nothing to assemble; the extra task would be pure overhead."""
@@ -362,3 +363,43 @@ class TestRunLevelRepairCap:
         marker = source.index("self._run_repairs += 1")
         window = source[marker - 700 : marker]
         assert "action is FailureAction.REPAIR" in window
+
+
+class TestTheAssemblyStepCarriesItsOwnTest:
+    """A re-export module nothing imports fails the vacuous-verification check.
+
+    Found by running a two-function fan-out end to end. Both implementations verified, the
+    assembly module was exactly right, and the run still failed: ``number.py`` was a changed
+    file that no test imported, so the integrity check refused it. The check was correct --
+    the defect was emitting a file that could never satisfy it.
+    """
+
+    def steps(self) -> list[PlannedStep]:
+        functions = [
+            FunctionSpec(name="is_even", signature="is_even(n)", behaviour="True when even"),
+            FunctionSpec(name="is_odd", signature="is_odd(n)", behaviour="True when odd"),
+        ]
+        return specs_to_steps(functions, "is_even(n) and is_odd(n)", assembly_module="number")
+
+    def test_the_assembly_step_also_writes_a_test_file(self) -> None:
+        assembly = self.steps()[-1]
+        assert "tests/test_number.py" in assembly.files
+
+    def test_that_test_imports_the_assembly_module(self) -> None:
+        """The exact thing the integrity check looks for."""
+        assembly = self.steps()[-1]
+        assert "from src.backend.number import is_even, is_odd" in assembly.description
+
+    def test_it_asserts_every_export(self) -> None:
+        """A broken or misspelled export is the one way a re-export module can fail."""
+        assembly = self.steps()[-1]
+        assert "assert callable(is_even)" in assembly.description
+        assert "assert callable(is_odd)" in assembly.description
+
+    def test_the_module_still_carries_no_logic(self) -> None:
+        assembly = self.steps()[-1]
+        assert "Write no other code and no logic" in assembly.description
+
+    def test_implementation_steps_are_unaffected(self) -> None:
+        for step in self.steps()[:-1]:
+            assert "__all__" not in step.description

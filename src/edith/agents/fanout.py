@@ -251,6 +251,13 @@ def specs_to_steps(
     When ``assembly_module`` is given, a final step is appended that depends on every other
     and creates a module containing only imports and ``__all__`` -- no logic, so there is
     nothing in it for the model to get wrong.
+
+    That step carries its own test, and must. Its module is pure re-exports, so nothing else
+    will ever import it, and the vacuous-verification check then fails the run over a changed
+    file that no test exercises -- the check being exactly right about a file the fan-out
+    should not have produced bare. Asserting the names are importable and callable is also the
+    only thing worth testing about a re-export module: a broken or misspelled export is the
+    one way it can fail.
     """
     steps: list[PlannedStep] = []
     for index, spec in enumerate(functions, start=1):
@@ -277,6 +284,8 @@ def specs_to_steps(
         imports = "\n".join(
             f"from src.backend.{name} import {name}" for name in names
         )
+        joined = ", ".join(names)
+        assertions = "\n".join(f"    assert callable({name})" for name in names)
         steps.append(
             PlannedStep(
                 step=len(steps) + 1,
@@ -285,9 +294,19 @@ def specs_to_steps(
                     f"Create src/backend/{assembly_module}.py containing ONLY these import "
                     f"lines and an __all__ list. Write no other code and no logic.\n"
                     f"{imports}\n"
-                    f"__all__ = [{exports}]"
+                    f"__all__ = [{exports}]\n"
+                    f"\n"
+                    f"Also create tests/test_{assembly_module}.py containing exactly:\n"
+                    f"\n"
+                    f"from src.backend.{assembly_module} import {joined}\n"
+                    f"\n"
+                    f"def test_{assembly_module}_exports():\n"
+                    f"{assertions}"
                 ),
-                files=[f"src/backend/{assembly_module}.py"],
+                files=[
+                    f"src/backend/{assembly_module}.py",
+                    f"tests/test_{assembly_module}.py",
+                ],
                 depends_on=[step.step for step in steps],
                 acceptance=f"{assembly_module} re-exports every function",
             )
