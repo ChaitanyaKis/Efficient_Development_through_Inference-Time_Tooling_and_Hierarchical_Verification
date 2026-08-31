@@ -42,6 +42,7 @@ from edith.config.schema import EdithConfig
 from edith.errors import ConfigurationError, EdithError
 from edith.observability.logging import get_logger
 from edith.state.store import StateStore, open_store
+from edith.system.resources import ModelFit, classify_fit, snapshot
 
 logger = get_logger(__name__)
 
@@ -360,6 +361,11 @@ def describe_models(config: EdithConfig) -> list[dict[str, Any]]:
     Availability is asked of the provider rather than assumed. A profile that is configured but
     not pulled is reported unavailable with the reason -- never silently swapped for another
     model, because a run whose model quietly changed is a run whose results mean nothing.
+
+    Being pulled is necessary but not sufficient. A profile whose weights exceed this machine's
+    VRAM and RAM together cannot load at any speed, so offering it as a choice would hand the
+    user a run that fails minutes later for a reason the screen already knew. Those are reported
+    unavailable too, with the arithmetic that says so.
     """
     from edith.models.registry import build_provider  # noqa: PLC0415 - heavy import
 
@@ -372,20 +378,35 @@ def describe_models(config: EdithConfig) -> list[dict[str, Any]]:
     except Exception as exc:  # noqa: BLE001 - an unreachable runtime is a UI state
         probe_error = f"{type(exc).__name__}: {exc}"
 
+    snap = snapshot()
     entries: list[dict[str, Any]] = []
     for name, params in config.models.profiles.items():
-        available = params.model_name in installed
+        fit = classify_fit(params.estimated_vram_mb, snap)
+        loadable = fit is not ModelFit.EXCEEDS_MACHINE
+        pulled = params.model_name in installed
+        available = pulled and loadable and not probe_error
+
+        if probe_error:
+            reason = probe_error
+        elif not pulled:
+            reason = "not pulled into the local runtime"
+        elif not loadable:
+            capacity = (snap.free_vram_mb or 0) + snap.ram_available_mb
+            reason = (
+                f"needs ~{params.estimated_vram_mb} MB; this machine has {capacity} MB "
+                "of VRAM and free RAM combined"
+            )
+        else:
+            reason = ""
+
         entries.append(
             {
                 "profile": name,
                 "model_name": params.model_name,
                 "default": name == config.models.default_profile,
                 "available": available,
-                "reason": (
-                    probe_error
-                    if probe_error
-                    else ("" if available else "not pulled into the local runtime")
-                ),
+                "fit": fit.value,
+                "reason": reason,
             }
         )
     return entries

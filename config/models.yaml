@@ -72,3 +72,30 @@ profiles:
     supports_tools: true
     keep_alive: "5m"
     estimated_vram_mb: 5800
+
+  # OPT-IN ONLY, and on the machine this config records it does not load at all.
+  #
+  #   weights ~16.4 GB (Q4_K_M) + KV @8k ctx ~0.5 GB + compute ~0.5 GB + CUDA ctx ~0.3 GB
+  #   = ~17.7 GB, against 5.8 GB free VRAM + ~5.6 GB available RAM = ~11.4 GB of capacity.
+  #
+  # That is not a slow configuration, it is an impossible one: `edith doctor --profile gemma`
+  # reports FAIL rather than the "spills to RAM and will be very slow" warning a 7B gets,
+  # because there is no amount of waiting that makes a 17.7 GB model start in 11.4 GB.
+  #
+  # Kept in the list for the same reason `large` is: the tradeoff should be visible and
+  # refused by a check, not forgotten and rediscovered. It becomes usable on a machine with
+  # ~24 GB VRAM, or ~20 GB of free system RAM if slow CPU inference is acceptable.
+  #
+  # The footprint is estimated from published quantisation sizes, not measured here -- it
+  # cannot be measured on this machine, since it cannot be loaded. Correct it on any machine
+  # where it does run.
+  gemma:
+    model_name: "gemma3:27b"
+    context_length: 8192
+    temperature: 0.2
+    top_p: 0.9
+    max_output_tokens: 2048
+    seed: 7
+    supports_tools: true
+    keep_alive: "5m"
+    estimated_vram_mb: 17700

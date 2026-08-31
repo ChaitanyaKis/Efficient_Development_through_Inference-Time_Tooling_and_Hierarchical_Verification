@@ -20,7 +20,7 @@ from edith.models.base import ModelProvider
 from edith.models.registry import available_providers, build_provider
 from edith.observability.logging import get_logger
 from edith.schemas.model import GenerationOptions, Message, Role, StructuredMode
-from edith.system.resources import ResourceSnapshot, fits_in_vram, snapshot
+from edith.system.resources import ModelFit, ResourceSnapshot, classify_fit, snapshot
 
 logger = get_logger(__name__)
 
@@ -211,11 +211,24 @@ def check_model_fit(
             f"{name}: needs ~{params.estimated_vram_mb} MB VRAM; no GPU detected",
             "The model will run on CPU using system RAM instead.",
         )
-    if fits_in_vram(params.estimated_vram_mb, snap):
+    fit = classify_fit(params.estimated_vram_mb, snap)
+    if fit is ModelFit.FITS_VRAM:
         return CheckResult(
             "model_fit",
             CheckStatus.OK,
             f"{name}: ~{params.estimated_vram_mb} MB estimated, {free} MB free VRAM",
+        )
+    capacity = free + snap.ram_available_mb
+    if fit is ModelFit.EXCEEDS_MACHINE:
+        # FAIL, not WARN. A model larger than VRAM and RAM together does not start, so the
+        # "slow" advice below would send someone off to wait for a run that cannot begin.
+        return CheckResult(
+            "model_fit",
+            CheckStatus.FAIL,
+            f"{name}: ~{params.estimated_vram_mb} MB estimated exceeds this machine "
+            f"({free} MB free VRAM + {snap.ram_available_mb} MB available RAM = {capacity} MB)",
+            "This profile cannot load here at any speed. Select a smaller profile, or run it "
+            "on a machine with more VRAM or free RAM.",
         )
     return CheckResult(
         "model_fit",

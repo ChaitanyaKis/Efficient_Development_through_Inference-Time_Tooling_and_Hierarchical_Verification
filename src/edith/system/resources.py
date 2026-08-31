@@ -11,6 +11,7 @@ import platform
 import shutil
 import subprocess
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 import psutil
@@ -147,3 +148,52 @@ def fits_in_vram(estimated_vram_mb: int, snap: ResourceSnapshot, *, headroom_mb:
     if free is None or estimated_vram_mb <= 0:
         return True
     return estimated_vram_mb + headroom_mb <= free
+
+
+class ModelFit(StrEnum):
+    """Where a model's weights would have to live on this machine.
+
+    ``fits_in_vram`` answers one bit -- does it fit in VRAM -- which is the wrong shape for
+    the advice a caller has to give. A 7B that misses VRAM by a few hundred MB spills into
+    system RAM and runs slowly; a 27B exceeds VRAM *and* RAM together and does not load at
+    all. Telling someone the second case will be "very slow" sends them off to wait for a
+    run that was never going to start.
+    """
+
+    FITS_VRAM = "fits_vram"
+    SPILLS_TO_RAM = "spills_to_ram"
+    EXCEEDS_MACHINE = "exceeds_machine"
+    UNKNOWN = "unknown"
+
+
+def classify_fit(
+    estimated_vram_mb: int, snap: ResourceSnapshot, *, headroom_mb: int = 512
+) -> ModelFit:
+    """Classify where a model of this size would have to run.
+
+    The ceiling for :attr:`ModelFit.EXCEEDS_MACHINE` is free VRAM plus *available* RAM: what
+    the machine can actually offer right now. Total RAM would be the wrong number -- on a 16 GB
+    Windows box the OS and open applications routinely hold 10 GB, so a model measured against
+    the total looks loadable and then thrashes the pagefile instead of starting.
+
+    This makes the answer a reading rather than a property, and it can change between calls as
+    memory frees up. That is the same basis :func:`check_ram` and :func:`check_disk` already
+    report on, and the honest claim here is "cannot load now", not "cannot ever load".
+
+    Args:
+        estimated_vram_mb: Weights + KV cache + compute buffers + CUDA context.
+        snap: Current resource reading.
+        headroom_mb: Reserve left for the desktop compositor and fragmentation.
+
+    Returns:
+        :attr:`ModelFit.UNKNOWN` when the estimate is missing or no GPU was detected -- the
+        caller must treat that as "cannot determine", never as a refusal.
+    """
+    free_vram = snap.free_vram_mb
+    if estimated_vram_mb <= 0 or free_vram is None:
+        return ModelFit.UNKNOWN
+    if estimated_vram_mb + headroom_mb <= free_vram:
+        return ModelFit.FITS_VRAM
+    if estimated_vram_mb > free_vram + snap.ram_available_mb:
+        return ModelFit.EXCEEDS_MACHINE
+    return ModelFit.SPILLS_TO_RAM
