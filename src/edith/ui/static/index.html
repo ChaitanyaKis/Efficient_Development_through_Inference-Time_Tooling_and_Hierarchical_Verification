@@ -251,6 +251,17 @@ async function api(path, opts) {
   return { ok: res.ok, status: res.status, data };
 }
 
+// An agent run's status says whether the agent executed, not what it decided. Printing the
+// raw "SUCCESS" put `critic SUCCESS` directly above `CODE_FAILURE - REPAIR` on the timeline,
+// which reads as the critic approving a task it had just rejected. The outcome is carried by
+// the verifier and executor rows; this one says only that the agent ran.
+function agentRan(status) {
+  const s = String(status || "").toUpperCase();
+  if (s === "SUCCESS") return "ran";
+  if (s === "FAILURE") return "errored";
+  return s.toLowerCase() || "ran";
+}
+
 function dotFor(state) {
   const s = String(state || "").toUpperCase();
   if (/COMPLETE|PASS|VERIFIED|SUCCEED|MERGED|DONE/.test(s)) return "ok";
@@ -553,7 +564,7 @@ function renderChanges() {
 function renderLogs() {
   const items = [];
   for (const r of SNAP.agent_runs) {
-    items.push({ ts: r.created_at, src: r.agent, msg: `${r.status}${r.task_id ? " · " + r.task_id : ""}`,
+    items.push({ ts: r.created_at, src: r.agent, msg: `${agentRan(r.status)}${r.task_id ? " · " + r.task_id : ""}`,
                  kind: "agents", bad: /FAIL|ERROR/.test(String(r.status)) });
   }
   for (const v of SNAP.verifications) {
