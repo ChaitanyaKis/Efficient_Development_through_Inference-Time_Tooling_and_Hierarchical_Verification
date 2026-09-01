@@ -23,6 +23,8 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from pydantic import ValidationError as PydanticValidationError
+
 from edith.agents.coder import CoderInput, CoderOutput, CodingAgent
 from edith.agents.critic import CriticAgent, CriticInput, CriticOutput, adjudicate
 from edith.agents.debugger import DebuggerInput, DebuggerOutput, DebuggingAgent
@@ -196,6 +198,7 @@ class Orchestrator:
         self._registry = tool_registry or build_default_registry()
         self._policy = PathPolicy.create(workspace.root, self.config.tools.paths)
         self._runs = 0
+        self._run_budget = 0
         self._model_calls = 0
         self._run_repairs = 0
         self._baseline_ref: str | None = None
@@ -385,6 +388,10 @@ class Orchestrator:
         logger.info("plan.accepted", execution_id=execution.execution_id, tasks=len(tasks))
         return tasks
 
+    def _effective_budget(self) -> int:
+        """The run's agent-invocation ceiling, scaled to the plan once one exists."""
+        return self._run_budget or self.settings.max_total_agent_runs
+
     def _fan_out(self, execution: Execution, plan: PlannerOutput) -> PlannerOutput:
         """Re-plan a multi-function request as one task per function.
 
@@ -400,11 +407,15 @@ class Orchestrator:
         self._model_calls += 1
         try:
             fanned = fan_out(agent, execution.request, goal=plan.goal)
-        except PlanFanOutError as exc:
+        except (PlanFanOutError, PydanticValidationError) as exc:
+            # A schema violation here is a fan-out that cannot be represented, not a broken
+            # run: the ordinary plan is still valid and is what the request gets. Letting it
+            # propagate killed a six-function request outright before the caps were aligned.
+            reason = exc.message if isinstance(exc, PlanFanOutError) else str(exc)
             logger.warning(
                 "fanout.declined",
                 execution_id=execution.execution_id,
-                reason=exc.message,
+                reason=reason[:300],
             )
             return plan
         logger.info(
@@ -801,7 +812,7 @@ class Orchestrator:
             self._scoped_permissions(CodingAgent.identity.permissions, anchor), "coder"
         )
         while repairs < self.settings.max_repair_attempts:
-            if self._runs >= self.settings.max_total_agent_runs:
+            if self._runs >= self._effective_budget():
                 return (Verdict.FAIL, "total agent run budget exhausted", repairs)
 
             bundle = self._build_context(gateway, anchor)
@@ -974,7 +985,7 @@ class Orchestrator:
                     guidance = ""
                 evidence = _combined_evidence(report, coder_output)
 
-                if self._runs >= self.settings.max_total_agent_runs:
+                if self._runs >= self._effective_budget():
                     last_reason = "total agent run budget exhausted"
                     break
 
@@ -1020,6 +1031,11 @@ class Orchestrator:
 
         graph = TaskGraph(tasks)
         graph.refresh()
+        # Scaled to the plan: the backstop bounds runaway loops, not how much was asked for.
+        self._run_budget = max(
+            self.settings.max_total_agent_runs,
+            len(tasks) * self.settings.agent_runs_per_task,
+        )
         changed: list[str] = []
         repairs = 0
         deferred: list[str] = []
@@ -1028,7 +1044,7 @@ class Orchestrator:
         abort_category: FailureCategory | None = None
 
         while (task := graph.next_task()) is not None:
-            if self._runs >= self.settings.max_total_agent_runs:
+            if self._runs >= self._effective_budget():
                 aborted_reason = "total agent run budget exhausted"
                 break
 

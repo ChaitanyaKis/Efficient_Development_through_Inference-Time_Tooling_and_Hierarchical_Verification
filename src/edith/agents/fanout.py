@@ -50,13 +50,16 @@ from edith.schemas.agent import (
 from edith.schemas.common import EdithModel
 from edith.schemas.model import Message, Role
 
-from .planner import PlannedStep, PlannerOutput
+from .planner import MAX_PLAN_STEPS, PlannedStep, PlannerOutput
 
 logger = get_logger(__name__)
 
-#: Upper bound on fan-out. A request naming more functions than this is more likely a
-#: misparse than a real plan, and a hundred single-function runs is not a useful default.
-MAX_FUNCTIONS = 12
+#: Upper bound on fan-out, derived from the plan ceiling rather than picked: every function
+#: becomes a step and the assembly step takes one more, so anything larger cannot be
+#: represented. It was picked independently once, at 12 against a ceiling of 6, and a
+#: six-function request then crashed the run on a ValidationError instead of planning.
+#: A request naming more functions than this is also more likely a misparse than a real plan.
+MAX_FUNCTIONS = MAX_PLAN_STEPS - 1
 
 #: The measured-reliable task shape. Three details in it are load-bearing, each learned from a
 #: specific failure: "one function", because bundling four did not converge; the explicit

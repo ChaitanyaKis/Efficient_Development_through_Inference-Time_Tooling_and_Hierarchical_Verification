@@ -410,9 +410,20 @@ class OrchestrationConfig(StrictModel):
     #: benefit that has not been demonstrated on real generated code. Same discipline as M3.2's
     #: memory strategy, which is also off until evidence says otherwise.
     model_quality_review: bool = False
-    #: Ceiling on total agent invocations in one execution, a backstop against any loop
-    #: the per-task budgets fail to bound.
+    #: Floor on total agent invocations in one execution, a backstop against any loop the
+    #: per-task budgets fail to bound. The effective ceiling is this or
+    #: ``agent_runs_per_task`` times the number of planned tasks, whichever is larger.
+    #:
+    #: A flat number conflated two different things. This exists to stop a runaway loop, but
+    #: applied unscaled it also caps how much work may be asked for: a six-function library
+    #: fans out to seven tasks, spent the flat 40 on the first five, and was cut off with two
+    #: tasks never attempted. Bounding per task keeps the loop guard while letting a larger
+    #: request cost proportionally more.
     max_total_agent_runs: int = Field(default=40, ge=1, le=500)
+    #: Agent invocations one task may cost before the run-level backstop trips. Measured at
+    #: roughly seven on a fan-out task that exhausts its repair budget, so eight leaves room
+    #: without letting a pathological task run away.
+    agent_runs_per_task: int = Field(default=8, ge=1, le=50)
     #: Ceiling on repair attempts across a whole run, on top of the per-task budget.
     #:
     #: Fan-out turns one request into many tasks, so the per-task budget alone no longer

@@ -29,7 +29,20 @@ from edith.schemas.model import Message, Role
 
 from .base import Agent
 
+#: How many steps the prompt asks the model to aim for. Guidance, not enforcement: a hard
+#: rejection at this number was tried and removed, because a six-function library legitimately
+#: needs seven steps and failing the run over the model being reasonable is worse than a plan
+#: with one extra stage -- especially when fan-out discards that plan and rebuilds it anyway.
 MAX_TASKS = 6
+
+#: How many steps a plan may structurally hold. Larger than :data:`MAX_TASKS` because not
+#: every plan comes from the model -- planner fan-out builds its steps deterministically, one
+#: per function plus an assembly step, and a six-function library is a perfectly reasonable
+#: request that the model-distrust limit has no business refusing. Applying a guard against
+#: careless generation to trustworthy generated structure is a category error, and it showed
+#: up as a ValidationError that killed the run rather than a plan that declined to fan out.
+#: Still bounded: a plan is a small object, and unbounded fan-out is its own failure mode.
+MAX_PLAN_STEPS = 14
 
 SYSTEM_PROMPT = """You are the planning component of a software engineering system.
 
@@ -64,11 +77,11 @@ class PlannedStep(EdithModel):
     reliably. It is translated into a validated :class:`Task` afterwards.
     """
 
-    step: int = Field(ge=1, le=MAX_TASKS)
+    step: int = Field(ge=1, le=MAX_PLAN_STEPS)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=2000)
     files: list[str] = Field(default_factory=list, max_length=10)
-    depends_on: list[int] = Field(default_factory=list, max_length=MAX_TASKS)
+    depends_on: list[int] = Field(default_factory=list, max_length=MAX_PLAN_STEPS)
     acceptance: str = Field(default="", max_length=1000)
 
     @field_validator("files")
@@ -103,7 +116,7 @@ class PlannerOutput(EdithModel):
     """Output contract for :class:`PlannerAgent`."""
 
     goal: str = Field(min_length=1, max_length=500)
-    steps: list[PlannedStep] = Field(min_length=1, max_length=MAX_TASKS)
+    steps: list[PlannedStep] = Field(min_length=1, max_length=MAX_PLAN_STEPS)
 
 
 class PlannerAgent(Agent):
